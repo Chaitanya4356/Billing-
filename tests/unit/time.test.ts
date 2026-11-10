@@ -56,4 +56,13 @@ describe("formatDateTimeIST", () => {
   it("renders in Asia/Kolkata", () => {
     expect(formatDateTimeIST(new Date("2026-11-09T20:30:00Z"))).toBe("10 Nov 2026, 02:00 am");
   });
+
+  it("always prints Sep, never Sept", () => {
+    expect(formatDateTimeIST(new Date("2026-09-15T08:05:00Z"))).toBe("15 Sep 2026, 01:35 pm");
+  });
+
+  it("handles the 12 am and 12 pm edges", () => {
+    expect(formatDateTimeIST(new Date("2026-03-04T18:30:00Z"))).toBe("05 Mar 2026, 12:00 am");
+    expect(formatDateTimeIST(new Date("2026-03-05T06:30:00Z"))).toBe("05 Mar 2026, 12:00 pm");
+  });
 });

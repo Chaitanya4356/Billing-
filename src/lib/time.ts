@@ -51,12 +51,15 @@ export function monthRange(date: string): { from: string; to: string } {
   return { from: `${y}-${mm}-01`, to: `${y}-${mm}-${String(last).padStart(2, "0")}` };
 }
 
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** e.g. "10 Nov 2026, 02:00 am". Month names come from a fixed table so ICU versions cannot change them. */
 export function formatDateTimeIST(d: Date): string {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-IN", {
       timeZone: "Asia/Kolkata",
       day: "2-digit",
-      month: "short",
+      month: "numeric",
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
@@ -65,5 +68,5 @@ export function formatDateTimeIST(d: Date): string {
       .formatToParts(d)
       .map((p) => [p.type, p.value]),
   );
-  return `${parts.day} ${parts.month} ${parts.year}, ${parts.hour}:${parts.minute} ${String(parts.dayPeriod).toLowerCase()}`;
+  return `${parts.day} ${MONTH_NAMES[Number(parts.month) - 1]} ${parts.year}, ${parts.hour}:${parts.minute} ${String(parts.dayPeriod).toLowerCase()}`;
 }
