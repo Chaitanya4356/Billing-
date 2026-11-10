@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { billItems, payments, products, shopSettings, shops, users } from "@/db/schema";
 import { makeProduct, makeShop, resetDb, type TestShop } from "../helpers/db";
-import { seedShop } from "../../scripts/seed";
+import { seedShop } from "../../scripts/lib/seed-shop";
 
 interface BillOverrides {
   billNumber?: number;
@@ -246,8 +246,8 @@ describe("seedShop", () => {
       ownerUsername: "boss",
       ownerPassword: "boss-pass-123",
     };
-    await seedShop(env);
-    await seedShop(env);
+    expect(await seedShop(env)).toBe(true);
+    expect(await seedShop(env)).toBe(false);
     expect(await db.select().from(shops)).toHaveLength(1);
     const owners = await db.select().from(users);
     expect(owners).toHaveLength(1);

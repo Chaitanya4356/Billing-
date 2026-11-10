@@ -1,42 +1,10 @@
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+// CLI entry for `npm run seed`. The seeding itself lives in ./lib/seed-shop.ts.
 import { config } from "dotenv";
-
-export interface SeedEnv {
-  shopName: string;
-  ownerUsername: string;
-  ownerPassword: string;
-}
-
-/**
- * Creates the first shop, its default settings and an owner account.
- * Idempotent: does nothing (and returns) if any shop already exists.
- */
-export async function seedShop(env: SeedEnv): Promise<void> {
-  // Imported lazily so that the CLI can load .env before the db client reads DATABASE_URL.
-  const { db } = await import("@/db/client");
-  const { shopSettings, shops, users } = await import("@/db/schema");
-  const { hashPassword } = await import("@/modules/auth/password");
-
-  const existing = await db.select({ id: shops.id }).from(shops).limit(1);
-  if (existing.length > 0) return;
-
-  const passwordHash = await hashPassword(env.ownerPassword);
-  await db.transaction(async (tx) => {
-    const [shop] = await tx.insert(shops).values({ name: env.shopName }).returning({ id: shops.id });
-    await tx.insert(shopSettings).values({ shopId: shop.id });
-    await tx.insert(users).values({
-      shopId: shop.id,
-      name: env.ownerUsername,
-      username: env.ownerUsername,
-      passwordHash,
-      role: "OWNER",
-    });
-  });
-}
+import { seedShop } from "./lib/seed-shop";
 
 async function main(): Promise<void> {
   config({ path: ".env", quiet: true });
+  // Validate everything before any database access.
   const shopName = process.env.SEED_SHOP_NAME?.trim();
   const ownerUsername = process.env.SEED_OWNER_USERNAME?.trim();
   const ownerPassword = process.env.SEED_OWNER_PASSWORD;
@@ -47,20 +15,22 @@ async function main(): Promise<void> {
     throw new Error("SEED_OWNER_PASSWORD must be at least 8 characters");
   }
 
-  await seedShop({ shopName, ownerUsername, ownerPassword });
+  const created = await seedShop({ shopName, ownerUsername, ownerPassword });
   const { db } = await import("@/db/client");
   const { shops } = await import("@/db/schema");
   const rows = await db.select({ name: shops.name }).from(shops).limit(1);
-  console.log(`Seed complete (shop: ${rows[0]?.name ?? "none"}).`);
+  const name = rows[0]?.name ?? "none";
+  console.log(
+    created
+      ? `Seed complete (shop: ${name}).`
+      : `Seed skipped: a shop already exists (shop: ${name}). Nothing was changed.`,
+  );
 }
 
-// Only run when executed directly (npm run seed), never when imported by tests.
-const entry = process.argv[1];
-if (entry && import.meta.url === pathToFileURL(path.resolve(entry)).href) {
-  main()
-    .then(() => process.exit(0))
-    .catch((err: unknown) => {
-      console.error(err instanceof Error ? err.message : err);
-      process.exit(1);
-    });
-}
+// Entry point: runs unconditionally. Any rejection prints the failure and exits 1 (fail closed).
+main()
+  .then(() => process.exit(0))
+  .catch((err: unknown) => {
+    console.error(`seed FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });

@@ -5,9 +5,9 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 /**
- * Safety net: the script entry points must actually run and fail closed (exit 1 with a message),
- * never silently do nothing and exit 0. Every case fails during validation, before any docker or
- * database access. DATABASE_URL is overridden with an unreachable dummy so a real one is never used.
+ * Safety net: the script entry points (backup, restore-check, seed) must actually run and fail closed
+ * (exit 1 with a message), never silently do nothing and exit 0. Every case fails during validation,
+ * before any docker or database access. DATABASE_URL is overridden with an unreachable dummy so a real one is never used.
  */
 const root = path.resolve(__dirname, "..", "..");
 const tsxCli = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
@@ -63,5 +63,22 @@ describe("script entry points fail closed", { timeout: 90_000 }, () => {
     expect(r.status).toBe(1);
     expect(r.output).toContain("no backup files");
     expect(r.output).not.toContain("restore OK");
+  });
+
+  const seedEnv = { SEED_SHOP_NAME: "Entry Test Shop", SEED_OWNER_USERNAME: "entry-owner", SEED_OWNER_PASSWORD: "" };
+
+  it("seed.ts exits 1 when SEED_OWNER_PASSWORD is missing", () => {
+    const r = runScript("seed.ts", seedEnv);
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("seed FAILED");
+    expect(r.output).toContain("SEED_SHOP_NAME, SEED_OWNER_USERNAME and SEED_OWNER_PASSWORD must be set");
+    expect(r.output).not.toContain("Seed complete");
+  });
+
+  it("seed.ts exits 1 for a password under 8 characters", () => {
+    const r = runScript("seed.ts", { ...seedEnv, SEED_OWNER_PASSWORD: "short7!" });
+    expect(r.status).toBe(1);
+    expect(r.output).toContain("seed FAILED");
+    expect(r.output).toContain("SEED_OWNER_PASSWORD must be at least 8 characters");
   });
 });
