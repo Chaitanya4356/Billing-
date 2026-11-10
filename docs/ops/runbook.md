@@ -37,14 +37,21 @@ database URL into chat or tickets.
 
 ## 3. First-run setup
 
-1. **Install and build** on the host:
+1. **Set the environment variables** from section 2 (`DATABASE_URL` at least) on the host, before anything else.
+   `npm run build` needs `DATABASE_URL` set: several server modules validate it when they are loaded, and the build
+   loads them, so without it the build fails with "Invalid environment configuration". (The build only checks the
+   value; the database does not have to be reachable at build time.)
+2. **Install all dependencies and build** on the host:
 
    ```bash
    npm ci
    npm run build
    ```
 
-2. **Set the environment variables** from section 2 (`DATABASE_URL` at least).
+   Use plain `npm ci`, **not** `npm ci --omit=dev` (or `NODE_ENV=production npm ci`): `npm run db:migrate`,
+   `npm run seed`, `npm run backup` and `npm run backup:verify` use development dependencies (`drizzle-kit`, `tsx`,
+   `dotenv`). If the host must have production dependencies only, run those commands from another machine that has
+   a full `npm ci` checkout of the same version and the same `DATABASE_URL`.
 3. **Create the tables:** `npm run db:migrate`. Run this on every release before starting the new version.
 4. **Create the shop and the owner account** (once; it does nothing if a shop already exists):
 
@@ -157,7 +164,7 @@ Two layers (details and commands in [backup-restore.md](./backup-restore.md)):
 
 - **Provider automated backups with point-in-time recovery:** turn on in the database console before go-live.
 - **Nightly logical dump:** `npm run backup` every night (for example 02:30), kept 30 days, **copied off the
-  database host**. Check the schedule's log regularly: a non-zero exit means no backup was made that night.
+  database host**. It runs from a full `npm ci` checkout (it needs `tsx` and `dotenv`, see section 3). Check the schedule's log regularly: a non-zero exit means no backup was made that night.
 - **Restore drill:** `npm run backup && npm run backup:verify` before go-live and at least every 3 months; write down
   the date and the `restore OK` line.
 

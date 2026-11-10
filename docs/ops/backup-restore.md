@@ -41,6 +41,10 @@ Environment (read from the process environment, or `.env` in the project directo
 The host needs the PostgreSQL 16 client tools (`pg_dump`, `pg_restore`, `createdb`, `dropdb`); a client older than
 the server version will refuse to dump.
 
+It also needs a checkout of the app installed with **all** dependencies (`npm ci`, not `npm ci --omit=dev`):
+`npm run backup` and `npm run backup:verify` run `tsx scripts/...` and load `.env` with `dotenv`, and both are
+development dependencies. See the first-run steps in [runbook.md](./runbook.md) (section 3).
+
 ### Scheduling
 
 Linux (cron, as the user that owns the app; every night at 02:30):
@@ -54,6 +58,9 @@ Windows (Task Scheduler, daily 02:30):
 ```powershell
 schtasks /Create /TN "Billing nightly backup" /SC DAILY /ST 02:30 /TR "cmd /c cd /d C:\billing && npm run backup >> C:\billing\backup.log 2>&1"
 ```
+
+Both examples run `npm run backup` from the app directory (`/srv/billing`, `C:illing`), which must be a full
+`npm ci` install (the script runs through `tsx`), with `node` and `npm` on the PATH of the account the job runs as.
 
 Check the log regularly: a non-zero exit code (and `backup FAILED: ...` on stderr) means no backup was made that
 night. Wire the exit code into whatever alerting you have.
