@@ -143,6 +143,48 @@ export function TextField({
   );
 }
 
+/** Uncontrolled password input; the value is never rendered back by the app. */
+export function PasswordField({
+  id,
+  label,
+  hint,
+  error,
+  autoComplete,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  error?: string;
+  autoComplete: "new-password" | "current-password";
+}) {
+  return (
+    <div className="space-y-1">
+      <label htmlFor={id} className="block text-sm font-medium">
+        {label}
+      </label>
+      <input
+        id={id}
+        name={id}
+        type="password"
+        autoComplete={autoComplete}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}
+        className={INPUT}
+      />
+      {hint && !error ? (
+        <p id={`${id}-hint`} className="text-xs text-gray-500">
+          {hint}
+        </p>
+      ) : null}
+      {error ? (
+        <p id={`${id}-error`} role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function TextAreaField({
   id,
   label,

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { auditLogs, sessions, users } from "@/db/schema";
@@ -11,7 +11,50 @@ import {
   revokeUserSessions,
   validateSession,
 } from "@/modules/auth/session";
+import { resetPassword, setUserActive } from "@/modules/users/service";
 import { makeShop, resetDb, type TestShop } from "../helpers/db";
+
+// Test seam for the login race: verifyPassword behaves exactly like the real
+// one, but when `gate.hold` is set it waits for it after verifying, so a test
+// can change the user row while login() is "inside" argon2.
+const gate = vi.hoisted(() => ({
+  hold: null as Promise<void> | null,
+  onVerified: null as (() => void) | null,
+}));
+vi.mock("@/modules/auth/password", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/modules/auth/password")>();
+  return {
+    ...actual,
+    verifyPassword: async (plain: string, hashed: string) => {
+      const ok = await actual.verifyPassword(plain, hashed);
+      if (gate.hold) {
+        gate.onVerified?.();
+        await gate.hold;
+      }
+      return ok;
+    },
+  };
+});
+
+/** Starts `attempt` with verification paused; runs `during` once argon2 has verified, then releases. */
+async function raceDuringVerify<T>(attempt: () => Promise<T>, during: () => Promise<void>): Promise<string> {
+  let release!: () => void;
+  gate.hold = new Promise<void>((r) => (release = r));
+  const verified = new Promise<void>((r) => (gate.onVerified = r));
+  const p = attempt().then(
+    () => "ok",
+    (e: AppError) => e.code,
+  );
+  await verified;
+  gate.hold = null;
+  gate.onVerified = null;
+  try {
+    await during();
+  } finally {
+    release();
+  }
+  return p;
+}
 
 const T0 = new Date("2026-11-10T09:00:00.000Z");
 const minutes = (d: Date, m: number) => new Date(d.getTime() + m * 60_000);
@@ -194,6 +237,54 @@ describe("login", () => {
   });
 });
 
+describe("login racing a password reset or deactivation", () => {
+  let t: TestShop;
+
+  beforeEach(async () => {
+    await resetDb();
+    t = await makeShop();
+  });
+
+  afterEach(() => {
+    gate.hold = null;
+    gate.onVerified = null;
+  });
+
+  it("a login verified against the old password creates no session once the password is reset", async () => {
+    const outcome = await raceDuringVerify(
+      () => login("cashier", "cashier-pass-123", T0),
+      () => resetPassword(t.owner.ctx, t.cashier.id, "brand-new-pass-1"),
+    );
+    expect(outcome).toBe("UNAUTHENTICATED");
+    expect(await db.select().from(sessions)).toHaveLength(0);
+    const err = await expectAppError(login("cashier", "cashier-pass-123", T0), "UNAUTHENTICATED");
+    expect(err.message).toBe("Invalid username or password");
+    expect((await login("cashier", "brand-new-pass-1", T0)).ctx).toEqual(t.cashier.ctx);
+  });
+
+  it("a login in flight when the user is deactivated creates no session", async () => {
+    const outcome = await raceDuringVerify(
+      () => login("cashier", "cashier-pass-123", T0),
+      () => setUserActive(t.owner.ctx, t.cashier.id, false),
+    );
+    expect(outcome).toBe("UNAUTHENTICATED");
+    expect(await db.select().from(sessions)).toHaveLength(0);
+  });
+
+  it("the generic message is used, not LOCKED, when the guard fails for a non-lock reason", async () => {
+    let message = "";
+    await raceDuringVerify(
+      () =>
+        login("cashier", "cashier-pass-123", T0).catch((e: AppError) => {
+          message = e.message;
+          throw e;
+        }),
+      () => resetPassword(t.owner.ctx, t.cashier.id, "brand-new-pass-1"),
+    );
+    expect(message).toBe("Invalid username or password");
+  });
+});
+
 describe("sessions", () => {
   let t: TestShop;
 
@@ -239,6 +330,20 @@ describe("sessions", () => {
     expect(await validateSession(a.token, T0)).toBeNull();
     expect(await validateSession(b.token, T0)).toBeNull();
     expect(await validateSession(c.token, T0)).toEqual(t.cashier.ctx);
+  });
+
+  it("revokeUserSessions inside a transaction is rolled back with it", async () => {
+    const a = await login("owner", "owner-pass-123", T0);
+    await db
+      .transaction(async (tx) => {
+        await revokeUserSessions(t.owner.id, tx);
+        expect(await tx.select().from(sessions).where(eq(sessions.userId, t.owner.id))).toHaveLength(0);
+        throw new Error("rollback");
+      })
+      .catch(() => undefined);
+    expect(await validateSession(a.token, T0)).toEqual(t.owner.ctx);
+    await db.transaction(async (tx) => revokeUserSessions(t.owner.id, tx));
+    expect(await validateSession(a.token, T0)).toBeNull();
   });
 
   it("validateSession returns null once the user is deactivated while holding a live session", async () => {

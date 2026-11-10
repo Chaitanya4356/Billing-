@@ -5,6 +5,7 @@ export const SETTINGS_TABS = [
   { id: "gst", label: "GST" },
   { id: "discounts", label: "Discounts" },
   { id: "receipt", label: "Receipt" },
+  { id: "users", label: "Users" },
 ] as const;
 
 export type SettingsTabId = (typeof SETTINGS_TABS)[number]["id"];

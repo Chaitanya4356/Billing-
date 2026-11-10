@@ -57,7 +57,9 @@ function notLockedAt(now: Date) {
  * then applied with a single conditional UPDATE guarded by "not locked at
  * now"; those UPDATEs are the authority on lockout, so concurrent attempts
  * cannot exceed MAX_FAILED_ATTEMPTS guesses and a correct password cannot
- * succeed once a concurrent failure has locked the account.
+ * succeed once a concurrent failure has locked the account. The success
+ * UPDATE also requires the verified hash and is_active = true, so a password
+ * reset or deactivation that lands while argon2 runs yields no session.
  */
 export async function login(
   username: string,
@@ -177,23 +179,51 @@ export async function login(
     throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
   }
 
-  const session = await shortTx(async (tx) => {
+  const outcome = await shortTx(async (tx) => {
     // Same not-locked guard: a correct guess racing a concurrent lock loses.
+    // The row must also still carry the hash that was just verified and still
+    // be active: a password reset or deactivation that committed while argon2
+    // ran (and revoked the sessions) must not be followed by a new session.
     const [row] = await tx
       .update(users)
       .set({ failedAttempts: 0, lockedUntil: null })
-      .where(and(eq(users.id, user.id), notLockedAt(now)))
+      .where(
+        and(
+          eq(users.id, user.id),
+          notLockedAt(now),
+          eq(users.passwordHash, user.passwordHash),
+          eq(users.isActive, true),
+        ),
+      )
       .returning({ id: users.id });
-    if (!row) return null;
+    if (!row) {
+      const [fresh] = await tx
+        .select({ lockedUntil: users.lockedUntil })
+        .from(users)
+        .where(eq(users.id, user.id));
+      const locked = !!fresh?.lockedUntil && fresh.lockedUntil.getTime() > now.getTime();
+      return { kind: locked ? ("locked" as const) : ("changed" as const) };
+    }
     // Lazily drop this user's expired sessions.
     await tx.delete(sessions).where(and(eq(sessions.userId, user.id), lte(sessions.expiresAt, now)));
-    return createSession(tx, user.id, now);
+    return { kind: "ok" as const, session: await createSession(tx, user.id, now) };
   });
-  if (!session) await rejectLocked(null);
+  if (outcome.kind === "locked") await rejectLocked(null);
+  if (outcome.kind !== "ok") {
+    await recordAudit(db, {
+      shopId: user.shopId,
+      userId: user.id,
+      action: "LOGIN_FAILED",
+      entityType: "user",
+      entityId: user.id,
+      meta: { username: uname, reason: "CHANGED_DURING_LOGIN" },
+    });
+    throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
+  }
 
   return {
-    token: session!.token,
-    expiresAt: session!.expiresAt,
+    token: outcome.session.token,
+    expiresAt: outcome.session.expiresAt,
     ctx: { shopId: user.shopId, userId: user.id, role: user.role },
   };
 }
