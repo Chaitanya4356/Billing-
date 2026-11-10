@@ -1,8 +1,8 @@
 import { asc, eq, sql } from "drizzle-orm";
-import { db } from "@/db/client";
-import { categories, products, shopSettings, shops, users } from "@/db/schema";
-import type { AuthContext } from "@/lib/types";
-import { hashPassword } from "@/modules/auth/password";
+import { db } from "../../src/db/client";
+import { categories, products, shopSettings, shops, users } from "../../src/db/schema";
+import type { AuthContext } from "../../src/lib/types";
+import { hashPassword } from "../../src/modules/auth/password";
 import { assertTestDatabaseUrl } from "./assert-test-db";
 
 export interface TestUser {

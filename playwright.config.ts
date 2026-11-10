@@ -10,6 +10,7 @@ if (!testDatabaseUrl) {
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  globalSetup: "./tests/e2e/global-setup.ts",
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
@@ -23,7 +24,8 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: "http://localhost:3000",
-    reuseExistingServer: !process.env.CI,
+    // Never reuse: an already-running dev server may be bound to the dev DB.
+    reuseExistingServer: false,
     timeout: 120_000,
     env: { DATABASE_URL: testDatabaseUrl },
   },
