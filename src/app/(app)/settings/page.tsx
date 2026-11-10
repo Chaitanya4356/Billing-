@@ -3,6 +3,7 @@ import Link from "next/link";
 import { requirePageContext } from "@/modules/auth/page-guard";
 import { getSettings } from "@/modules/shop/service";
 import { listUsers } from "@/modules/users/service";
+import { AuditTab } from "./AuditTab";
 import { DiscountsForm, GstForm, NumberingForm, ShopForm } from "./settings-forms";
 import { ReceiptTab } from "./ReceiptTab";
 import { resolveTab, SETTINGS_TABS } from "./tabs";
@@ -16,7 +17,8 @@ export default async function SettingsPage({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const ctx = await requirePageContext(["OWNER"]);
-  const tab = resolveTab((await searchParams).tab);
+  const params = await searchParams;
+  const tab = resolveTab(params.tab);
   const { shop, settings } = await getSettings(ctx);
 
   return (
@@ -43,6 +45,7 @@ export default async function SettingsPage({
         {tab === "discounts" ? <DiscountsForm settings={settings} /> : null}
         {tab === "receipt" ? <ReceiptTab shop={shop} settings={settings} /> : null}
         {tab === "users" ? <UsersTab users={await listUsers(ctx)} /> : null}
+        {tab === "audit" ? <AuditTab ctx={ctx} searchParams={params} /> : null}
       </section>
     </div>
   );
