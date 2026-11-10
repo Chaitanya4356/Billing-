@@ -29,6 +29,7 @@ invalid variable by name; it never prints the values.
 | `DATABASE_URL` | yes | `postgres://user:password@host:5432/database` (`postgresql://` also works). Add `?sslmode=require` if the provider requires TLS. |
 | `NODE_ENV` | no | `development`, `test` or `production`. `npm run build` and `npm run start` set `production` themselves; any other value (for example `staging`) is rejected. |
 | `SEED_SHOP_NAME`, `SEED_OWNER_USERNAME`, `SEED_OWNER_PASSWORD` | first run only | Used by `npm run seed` once. Remove them from the environment afterwards. |
+| `LOGIN_RATE_LIMIT_ENABLED` | no | `1` turns the sign-in rate limit (section 10) on outside production. It is always on when `NODE_ENV=production`; leave this unset there. |
 | `BACKUP_DIR`, `BACKUP_KEEP_DAYS`, `PG_BIN_DIR`, `BACKUP_DOCKER_CONTAINER` | backups only | See [backup-restore.md](./backup-restore.md). |
 
 Secrets live **only** in environment variables (or the host's secret store). Never commit `.env`, never paste the
@@ -48,10 +49,12 @@ database URL into chat or tickets.
 4. **Create the shop and the owner account** (once; it does nothing if a shop already exists):
 
    ```bash
-   SEED_SHOP_NAME="Shop name" SEED_OWNER_USERNAME=owner SEED_OWNER_PASSWORD='a-long-temporary-password' npm run seed
+   SEED_SHOP_NAME="Shop name" SEED_OWNER_USERNAME=<choose-a-non-obvious-owner-username> SEED_OWNER_PASSWORD='a-long-temporary-password' npm run seed
    ```
 
-   The password must be at least 8 characters. Use a throw-away value.
+   The username must be 3 to 32 characters of `a-z`, `0-9`, `.`, `_` or `-`. Choose a non-obvious owner username (not
+   `owner` or `admin`): anyone who knows it can lock the owner out with wrong passwords, and a locked owner account can
+   only wait out the 15-minute lock. The password must be at least 8 characters. Use a throw-away value.
 5. **Start the app:** `npm run start`, behind HTTPS. Open the site and sign in as the owner.
 6. **Change the owner password immediately:** Settings > Users > **Change my password**. You are signed out
    everywhere and sign in again with the new password. Then remove the `SEED_*` variables.
@@ -187,6 +190,15 @@ Do not take real sales until every item is true:
   user out everywhere; deactivating a user signs them out at once.
 - **Lockout:** 5 wrong passwords lock the account for 15 minutes. Sign-in failures, lockouts and other important
   actions are in the audit log (Settings > Audit log).
+- **Sign-in rate limit:** in production each client address may make at most 10 sign-in attempts per 5 minutes
+  (successful or not); further attempts get "Too many sign-in attempts. Please wait a few minutes and try again."
+  without checking the password or writing an audit entry. The client address is the first `X-Forwarded-For` entry,
+  else `X-Real-IP`. The counters are **in memory, per app process**: they reset when the app restarts, and with
+  several app instances each keeps its own counters. Behind a reverse proxy or load balancer, the proxy **must set or
+  overwrite** `X-Forwarded-For` (otherwise a client can pick its own address, and all clients may share one counter).
+  A rate limit at the host or proxy level is still recommended. Several cashiers behind the same shop router share one
+  address, so ten wrong attempts in five minutes at the counter pause sign-in for everyone there until the window
+  ends.
 - **Who can see what:** owners see everything (all dates, reports, CSV, settings, users, audit log). Cashiers see
   Billing and today's bills only. Customer name and phone appear only on bills, to signed-in users who can see the
   bill. Backup dumps contain all of this data: restrict access to them.
@@ -196,6 +208,7 @@ Do not take real sales until every item is true:
 | Problem | What to do |
 | --- | --- |
 | A user cannot sign in | Check the username and that Caps Lock is off. If the message says the account is locked, wait 15 minutes. For a cashier, the owner can instead reset the password (Settings > Users > Reset password), which unlocks the account at once. A locked owner account has no one to reset it: wait 15 minutes. A deactivated user cannot sign in until reactivated. |
+| "Too many sign-in attempts. Please wait a few minutes and try again." | More than 10 sign-in attempts came from this address within 5 minutes (section 10). Wait up to 5 minutes and try again; restarting the app also clears the counters. |
 | "Prices or tax settings changed. Please review the new total and charge again." | A product price, discount rule or tax setting changed while the cart was open. Nothing was charged and no number was used. Check the new total on screen, tell the customer if it differs, and press Charge again. |
 | The site shows an error or will not load | Open `/api/health`. `503`: the database is unreachable or slow, check the database provider's status and `DATABASE_URL`. No response: the app or the internet is down, see section 5. |
 | The app reports "Invalid environment configuration" | It lists each variable by name. Fix those variables (section 2) and restart. |

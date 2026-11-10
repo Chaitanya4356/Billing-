@@ -1,8 +1,14 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { runAction } from "@/lib/errors";
+import {
+  LOGIN_RATE_LIMITED_MESSAGE,
+  clientKeyFromHeaders,
+  isLoginRateLimitEnabled,
+  loginRateLimiter,
+} from "./rate-limit";
 import { login } from "./service";
 import { SESSION_COOKIE, logout } from "./session";
 
@@ -16,6 +22,14 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
   const password = formData.get("password");
   if (typeof username !== "string" || typeof password !== "string" || !username.trim() || !password) {
     return { error: "Enter your username and password" };
+  }
+
+  // Per-client throttle in front of argon2, the DB and the audit log: a refused
+  // attempt does no DB access, no password hashing and writes no audit row.
+  if (isLoginRateLimitEnabled(process.env)) {
+    const h = await headers();
+    const key = clientKeyFromHeaders((name) => h.get(name));
+    if (!loginRateLimiter.attempt(key).allowed) return { error: LOGIN_RATE_LIMITED_MESSAGE };
   }
 
   const result = await runAction(() => login(username, password));
