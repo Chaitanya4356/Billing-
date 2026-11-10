@@ -922,6 +922,36 @@ describe("createBill", () => {
       expect(await tokensOn("2026-11-10")).toEqual([2, 3, 4, 5]);
     });
 
+    it("a dayStartHour change that moves the business date back resyncs that date's DAILY counter", async () => {
+      // D = 2026-11-10 (Asia/Kolkata), day starting at midnight.
+      const ist = (date: string, hhmm: string) => new Date(`${date}T${hhmm}:00+05:30`);
+      await updateSettings(t.owner.ctx, { dayStartHour: 0 }, ist("2026-11-10", "11:00"));
+      const d1 = await createBill(t.cashier.ctx, cash(), ist("2026-11-10", "12:00")); // DAILY token 1 on D
+      expect([d1.businessDate, d1.tokenNumber]).toEqual(["2026-11-10", 1]);
+
+      await updateSettings(t.owner.ctx, { tokenResetMode: "NEVER" }, ist("2026-11-10", "12:30"));
+      const n1 = await createBill(t.cashier.ctx, cash(), ist("2026-11-10", "13:00"));
+      const n2 = await createBill(t.cashier.ctx, cash(), ist("2026-11-10", "13:10"));
+      expect([n1.tokenNumber, n2.tokenNumber]).toEqual([2, 3]); // NEVER tokens, still on D
+      expect(await seq(t.shopId, "token:2026-11-10")).toBe(1); // D's DAILY counter is now behind
+
+      // After midnight: back to DAILY syncs only the new business date D+1.
+      const lateNight = ist("2026-11-11", "02:00");
+      await updateSettings(t.owner.ctx, { tokenResetMode: "DAILY" }, lateNight);
+      expect(await seq(t.shopId, "token:2026-11-11")).toBe(0);
+
+      // The day now starts at 04:00, so 02:00 on D+1 belongs to D again.
+      await updateSettings(t.owner.ctx, { dayStartHour: 4 }, lateNight);
+      expect(await seq(t.shopId, "token:2026-11-10")).toBe(3);
+
+      const next = await createBill(t.cashier.ctx, cash(), lateNight);
+      expect(next.businessDate).toBe("2026-11-10");
+      expect(next.tokenNumber).toBe(4);
+      const tokens = await tokensOn("2026-11-10");
+      expect(tokens).toEqual([1, 2, 3, 4]);
+      expect(new Set(tokens).size).toBe(tokens.length);
+    });
+
     it("syncing never lowers a counter", async () => {
       for (let i = 0; i < 4; i++) await createBill(t.cashier.ctx, cash(), NOW);
       await db

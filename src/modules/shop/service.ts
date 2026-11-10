@@ -90,9 +90,9 @@ export async function getSettings(ctx: AuthContext): Promise<{ shop: ShopInfo; s
  * Applies a partial patch to the shop profile and settings. OWNER only.
  * One transaction: the row lock, the updates and the audit row commit together.
  * Writes nothing (and no audit row) when no value actually changes.
- * A tokenResetMode change also raises the newly active token counter to the
- * highest token already issued (`now` picks the business date), so the switch
- * can never re-issue a token. Bills lock these rows FOR SHARE while numbering,
+ * A tokenResetMode or dayStartHour change also raises the active token counter
+ * (for the resulting mode and business date) to the highest token already issued
+ * (`now` picks the business date), so the change can never re-issue a token. Bills lock these rows FOR SHARE while numbering,
  * so the sync serialises with in-flight bills.
  */
 export async function updateSettings(
@@ -148,10 +148,14 @@ export async function updateSettings(
     if (Object.keys(settingsChanges).length > 0) {
       await tx.update(shopSettings).set(settingsChanges).where(eq(shopSettings.shopId, ctx.shopId));
     }
-    if (input.tokenResetMode !== undefined && changed.includes("tokenResetMode")) {
+    // A dayStartHour change can move the current business date (even back to a
+    // date whose DAILY counter is behind tokens issued there in NEVER mode), so
+    // it syncs the resulting mode's counter just like a mode change does.
+    if (changed.includes("tokenResetMode") || changed.includes("dayStartHour")) {
+      const mode = input.tokenResetMode ?? settings.tokenResetMode;
       const dayStartHour = input.dayStartHour ?? settings.dayStartHour;
       const businessDate = businessDateFor(now, shop.timezone, dayStartHour);
-      await syncTokenSequence(tx, ctx.shopId, input.tokenResetMode, businessDate);
+      await syncTokenSequence(tx, ctx.shopId, mode, businessDate);
     }
     await recordAudit(tx, {
       shopId: ctx.shopId,
