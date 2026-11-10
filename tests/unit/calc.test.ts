@@ -107,6 +107,43 @@ describe("calculateTotals", () => {
     expect(codeOf(() => calculateTotals(input({ lines: [] })))).toBe("VALIDATION");
   });
 
+  it("caps the subtotal at 1_000_000_000 paise so every stored amount fits Postgres int4", () => {
+    const atCap = calculateTotals(input({ lines: [{ unitPricePaise: 1_000_000_000, quantity: 1 }] }));
+    expect(atCap.subtotalPaise).toBe(1_000_000_000);
+    expect(atCap.totalPaise).toBe(1_000_000_000);
+    expect(codeOf(() => calculateTotals(input({ lines: [{ unitPricePaise: 1_000_000_001, quantity: 1 }] })))).toBe(
+      "VALIDATION",
+    );
+    expect(
+      codeOf(() =>
+        calculateTotals(
+          input({
+            lines: [
+              { unitPricePaise: 999_999_999, quantity: 1 },
+              { unitPricePaise: 2, quantity: 1 },
+            ],
+          }),
+        ),
+      ),
+    ).toBe("VALIDATION");
+  });
+
+  it("at the cap with 100% exclusive GST and rounding, every amount stays within int4", () => {
+    const INT4_MAX = 2_147_483_647;
+    for (const subtotal of [1_000_000_000, 999_999_951]) {
+      const t = calculateTotals(
+        input({
+          lines: [{ unitPricePaise: subtotal, quantity: 1 }],
+          gst: { enabled: true, rateBp: 10000, inclusive: false },
+          roundToRupee: true,
+        }),
+      );
+      expect(t.taxPaise).toBe(subtotal);
+      expect(t.totalPaise).toBeLessThanOrEqual(2_000_000_000 + 50);
+      for (const v of Object.values(t)) expect(Math.abs(v)).toBeLessThanOrEqual(INT4_MAX);
+    }
+  });
+
   it("validates discount value and GST rate are integers", () => {
     expect(codeOf(() => calculateTotals(input({ discount: { type: "FLAT", value: 10.5 } })))).toBe("VALIDATION");
     expect(codeOf(() => calculateTotals(input({ discount: { type: "PERCENT", value: 100.5 } })))).toBe("VALIDATION");

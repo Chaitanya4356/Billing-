@@ -23,8 +23,13 @@ export interface Totals {
 }
 
 const MAX_QUANTITY = 999;
-/** Keeps every intermediate product (net * 10000, doubled in roundDiv) well inside 2^53. */
-const MAX_SUBTOTAL_PAISE = 100_000_000_000;
+/**
+ * Ten million rupees. Paise columns are Postgres `integer` (max 2,147,483,647):
+ * even at 100% exclusive GST the largest derived amount is
+ * 2 * 1_000_000_000 + 50 (round-off), which fits. It also keeps every
+ * intermediate product (net * 10000, doubled in roundDiv) far inside 2^53.
+ */
+export const MAX_SUBTOTAL_PAISE = 1_000_000_000;
 
 function invalid(message: string): never {
   throw new AppError("VALIDATION", message);
