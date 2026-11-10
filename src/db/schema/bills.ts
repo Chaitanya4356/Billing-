@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -64,6 +65,8 @@ export const bills = pgTable(
     unique("bills_shop_id_bill_number_unique").on(t.shopId, t.billNumber),
     unique("bills_shop_id_business_date_token_number_unique").on(t.shopId, t.businessDate, t.tokenNumber),
     unique("bills_shop_id_idempotency_key_unique").on(t.shopId, t.idempotencyKey),
+    // Target for the composite (bill_id, shop_id) FKs on child tables.
+    unique("bills_id_shop_id_unique").on(t.id, t.shopId),
     index("bills_shop_id_business_date_idx").on(t.shopId, t.businessDate),
     index("bills_shop_id_created_at_idx").on(t.shopId, t.createdAt.desc()),
     check("bills_total_paise_check", sql`${t.totalPaise} >= 0`),
@@ -78,9 +81,10 @@ export const billItems = pgTable(
   "bill_items",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    billId: uuid("bill_id")
+    shopId: uuid("shop_id")
       .notNull()
-      .references(() => bills.id, { onDelete: "cascade" }),
+      .references(() => shops.id),
+    billId: uuid("bill_id").notNull(),
     // Nullable and never cascading: bill history must survive product removal.
     productId: uuid("product_id").references(() => products.id),
     productName: text("product_name").notNull(),
@@ -91,6 +95,11 @@ export const billItems = pgTable(
     sortOrder: integer("sort_order").notNull().default(0),
   },
   (t) => [
+    foreignKey({
+      name: "bill_items_bill_id_shop_id_bills_fk",
+      columns: [t.billId, t.shopId],
+      foreignColumns: [bills.id, bills.shopId],
+    }),
     index("bill_items_bill_id_idx").on(t.billId),
     check("bill_items_quantity_check", sql`${t.quantity} > 0`),
     check("bill_items_unit_price_paise_check", sql`${t.unitPricePaise} >= 0`),
@@ -101,9 +110,10 @@ export const payments = pgTable(
   "payments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    billId: uuid("bill_id")
+    shopId: uuid("shop_id")
       .notNull()
-      .references(() => bills.id, { onDelete: "cascade" }),
+      .references(() => shops.id),
+    billId: uuid("bill_id").notNull(),
     method: paymentMethodEnum("method").notNull(),
     amountPaise: integer("amount_paise").notNull(),
     cashTenderedPaise: integer("cash_tendered_paise"),
@@ -112,5 +122,12 @@ export const payments = pgTable(
     status: paymentStatusEnum("status").notNull().default("RECORDED"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("payments_bill_id_idx").on(t.billId)],
+  (t) => [
+    foreignKey({
+      name: "payments_bill_id_shop_id_bills_fk",
+      columns: [t.billId, t.shopId],
+      foreignColumns: [bills.id, bills.shopId],
+    }),
+    index("payments_bill_id_idx").on(t.billId),
+  ],
 );

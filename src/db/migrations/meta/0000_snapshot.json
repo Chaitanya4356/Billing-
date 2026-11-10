@@ -1,5 +1,5 @@
 {
-  "id": "32eb606c-94af-4b75-88d2-711b9304aa5b",
+  "id": "41baa055-c0f7-4cf3-aab1-08e5d664c895",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -607,6 +607,12 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
+        "shop_id": {
+          "name": "shop_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "bill_id": {
           "name": "bill_id",
           "type": "uuid",
@@ -675,17 +681,17 @@
         }
       },
       "foreignKeys": {
-        "bill_items_bill_id_bills_id_fk": {
-          "name": "bill_items_bill_id_bills_id_fk",
+        "bill_items_shop_id_shops_id_fk": {
+          "name": "bill_items_shop_id_shops_id_fk",
           "tableFrom": "bill_items",
-          "tableTo": "bills",
+          "tableTo": "shops",
           "columnsFrom": [
-            "bill_id"
+            "shop_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "bill_items_product_id_products_id_fk": {
@@ -697,6 +703,21 @@
           ],
           "columnsTo": [
             "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "bill_items_bill_id_shop_id_bills_fk": {
+          "name": "bill_items_bill_id_shop_id_bills_fk",
+          "tableFrom": "bill_items",
+          "tableTo": "bills",
+          "columnsFrom": [
+            "bill_id",
+            "shop_id"
+          ],
+          "columnsTo": [
+            "id",
+            "shop_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -1026,6 +1047,14 @@
             "shop_id",
             "idempotency_key"
           ]
+        },
+        "bills_id_shop_id_unique": {
+          "name": "bills_id_shop_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "shop_id"
+          ]
         }
       },
       "policies": {},
@@ -1051,6 +1080,12 @@
           "primaryKey": true,
           "notNull": true,
           "default": "gen_random_uuid()"
+        },
+        "shop_id": {
+          "name": "shop_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
         },
         "bill_id": {
           "name": "bill_id",
@@ -1123,17 +1158,32 @@
         }
       },
       "foreignKeys": {
-        "payments_bill_id_bills_id_fk": {
-          "name": "payments_bill_id_bills_id_fk",
+        "payments_shop_id_shops_id_fk": {
+          "name": "payments_shop_id_shops_id_fk",
           "tableFrom": "payments",
-          "tableTo": "bills",
+          "tableTo": "shops",
           "columnsFrom": [
-            "bill_id"
+            "shop_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payments_bill_id_shop_id_bills_fk": {
+          "name": "payments_bill_id_shop_id_bills_fk",
+          "tableFrom": "payments",
+          "tableTo": "bills",
+          "columnsFrom": [
+            "bill_id",
+            "shop_id"
+          ],
+          "columnsTo": [
+            "id",
+            "shop_id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },

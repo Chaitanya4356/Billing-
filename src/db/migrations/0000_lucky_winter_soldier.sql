@@ -79,6 +79,7 @@ CREATE TABLE "products" (
 --> statement-breakpoint
 CREATE TABLE "bill_items" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"shop_id" uuid NOT NULL,
 	"bill_id" uuid NOT NULL,
 	"product_id" uuid,
 	"product_name" text NOT NULL,
@@ -125,12 +126,14 @@ CREATE TABLE "bills" (
 	CONSTRAINT "bills_shop_id_bill_number_unique" UNIQUE("shop_id","bill_number"),
 	CONSTRAINT "bills_shop_id_business_date_token_number_unique" UNIQUE("shop_id","business_date","token_number"),
 	CONSTRAINT "bills_shop_id_idempotency_key_unique" UNIQUE("shop_id","idempotency_key"),
+	CONSTRAINT "bills_id_shop_id_unique" UNIQUE("id","shop_id"),
 	CONSTRAINT "bills_total_paise_check" CHECK ("bills"."total_paise" >= 0),
 	CONSTRAINT "bills_total_formula_check" CHECK ("bills"."total_paise" = "bills"."subtotal_paise" - "bills"."discount_paise" + CASE WHEN "bills"."tax_included" THEN 0 ELSE "bills"."tax_paise" END + "bills"."round_off_paise")
 );
 --> statement-breakpoint
 CREATE TABLE "payments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"shop_id" uuid NOT NULL,
 	"bill_id" uuid NOT NULL,
 	"method" "payment_method" NOT NULL,
 	"amount_paise" integer NOT NULL,
@@ -165,12 +168,14 @@ ALTER TABLE "users" ADD CONSTRAINT "users_shop_id_shops_id_fk" FOREIGN KEY ("sho
 ALTER TABLE "categories" ADD CONSTRAINT "categories_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "products" ADD CONSTRAINT "products_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "products" ADD CONSTRAINT "products_category_id_categories_id_fk" FOREIGN KEY ("category_id") REFERENCES "public"."categories"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "bill_items" ADD CONSTRAINT "bill_items_bill_id_bills_id_fk" FOREIGN KEY ("bill_id") REFERENCES "public"."bills"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bill_items" ADD CONSTRAINT "bill_items_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bill_items" ADD CONSTRAINT "bill_items_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bill_items" ADD CONSTRAINT "bill_items_bill_id_shop_id_bills_fk" FOREIGN KEY ("bill_id","shop_id") REFERENCES "public"."bills"("id","shop_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bills" ADD CONSTRAINT "bills_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bills" ADD CONSTRAINT "bills_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bills" ADD CONSTRAINT "bills_cancelled_by_users_id_fk" FOREIGN KEY ("cancelled_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payments" ADD CONSTRAINT "payments_bill_id_bills_id_fk" FOREIGN KEY ("bill_id") REFERENCES "public"."bills"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_bill_id_shop_id_bills_fk" FOREIGN KEY ("bill_id","shop_id") REFERENCES "public"."bills"("id","shop_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "number_sequences" ADD CONSTRAINT "number_sequences_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_shop_id_shops_id_fk" FOREIGN KEY ("shop_id") REFERENCES "public"."shops"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

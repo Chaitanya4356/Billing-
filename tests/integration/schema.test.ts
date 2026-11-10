@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { billItems, products, shopSettings, shops, users } from "@/db/schema";
+import { billItems, payments, products, shopSettings, shops, users } from "@/db/schema";
 import { makeProduct, makeShop, resetDb, type TestShop } from "../helpers/db";
 import { seedShop } from "../../scripts/seed";
 
@@ -44,8 +44,9 @@ async function insertBill(t: TestShop, o: BillOverrides = {}): Promise<string> {
   return result.rows[0].id;
 }
 
-function item(billId: string, productId?: string, quantity = 1) {
+function item(shopId: string, billId: string, productId?: string, quantity = 1) {
   return {
+    shopId,
     billId,
     productId,
     productName: "Tea",
@@ -55,6 +56,16 @@ function item(billId: string, productId?: string, quantity = 1) {
     lineTotalPaise: 1000 * quantity,
     sortOrder: 0,
   };
+}
+
+function payment(shopId: string, billId: string) {
+  return { shopId, billId, method: "CASH" as const, amountPaise: 10000 };
+}
+
+// drizzle wraps driver errors; the pg error (with SQLSTATE) is on `cause`.
+function pgCode(err: unknown): string | undefined {
+  const e = err as { code?: string; cause?: { code?: string } } | null;
+  return e?.cause?.code ?? e?.code;
 }
 
 describe("schema constraints", () => {
@@ -96,13 +107,13 @@ describe("schema constraints", () => {
 
   it("rejects bill item quantity = 0", async () => {
     const billId = await insertBill(t);
-    await expect(db.insert(billItems).values(item(billId, undefined, 0))).rejects.toThrow();
+    await expect(db.insert(billItems).values(item(t.shopId, billId, undefined, 0))).rejects.toThrow();
   });
 
   it("rejects a negative unit price", async () => {
     const billId = await insertBill(t);
     await expect(
-      db.insert(billItems).values({ ...item(billId), unitPricePaise: -1 }),
+      db.insert(billItems).values({ ...item(t.shopId, billId), unitPricePaise: -1 }),
     ).rejects.toThrow();
   });
 
@@ -170,12 +181,36 @@ describe("schema constraints", () => {
   it("does not cascade-delete bill items when a referenced product row is deleted", async () => {
     const productId = await makeProduct(t.shopId, { name: "Tea", pricePaise: 1000 });
     const billId = await insertBill(t);
-    await db.insert(billItems).values(item(billId, productId));
+    await db.insert(billItems).values(item(t.shopId, billId, productId));
     // Deleting a referenced product is blocked (no cascade); the item survives.
     await expect(db.delete(products).where(eq(products.id, productId))).rejects.toThrow();
     const items = await db.select().from(billItems).where(eq(billItems.billId, billId));
     expect(items).toHaveLength(1);
     expect(items[0].productId).toBe(productId);
+  });
+
+  it("rejects deleting a bill that still has items or payments (no cascade)", async () => {
+    const billId = await insertBill(t);
+    await db.insert(billItems).values(item(t.shopId, billId));
+    await db.insert(payments).values(payment(t.shopId, billId));
+    await expect(db.execute(sql`DELETE FROM bills WHERE id = ${billId}`)).rejects.toThrow();
+    expect(await db.select().from(billItems).where(eq(billItems.billId, billId))).toHaveLength(1);
+    expect(await db.select().from(payments).where(eq(payments.billId, billId))).toHaveLength(1);
+  });
+
+  it("rejects an item or payment whose shop_id differs from its bill's shop_id (23503)", async () => {
+    const other = await makeShop();
+    const billId = await insertBill(t);
+    const itemErr = await db.insert(billItems).values(item(other.shopId, billId)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(pgCode(itemErr)).toBe("23503");
+    const payErr = await db.insert(payments).values(payment(other.shopId, billId)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(pgCode(payErr)).toBe("23503");
   });
 
   it("enforces category names unique per shop, case-insensitively", async () => {

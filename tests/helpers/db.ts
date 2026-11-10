@@ -3,6 +3,7 @@ import { db } from "@/db/client";
 import { categories, products, shopSettings, shops, users } from "@/db/schema";
 import type { AuthContext } from "@/lib/types";
 import { hashPassword } from "@/modules/auth/password";
+import { assertTestDatabaseUrl } from "./assert-test-db";
 
 export interface TestUser {
   id: string;
@@ -32,6 +33,7 @@ function testPasswordHashes(): Promise<{ owner: string; cashier: string }> {
 
 /** Truncates every table (and resets identity counters) in one statement. */
 export async function resetDb(): Promise<void> {
+  assertTestDatabaseUrl(process.env.DATABASE_URL ?? "");
   await db.execute(
     sql`TRUNCATE TABLE audit_logs, payments, bill_items, bills, number_sequences, sessions, products, categories, users, shop_settings, shops RESTART IDENTITY CASCADE`,
   );
