@@ -23,6 +23,7 @@ export default defineConfig({
           environment: "node",
           fileParallelism: false,
           setupFiles: ["tests/integration/setup-env.ts"],
+          globalSetup: ["tests/helpers/global-setup.ts"],
         },
       },
     ],
