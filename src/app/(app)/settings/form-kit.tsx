@@ -97,6 +97,7 @@ export function TextField({
   inputMode,
   className,
   upper,
+  onValueChange,
 }: {
   id: string;
   label: string;
@@ -107,6 +108,8 @@ export function TextField({
   inputMode?: "decimal" | "numeric" | "text";
   className?: string;
   upper?: boolean;
+  /** Called with the current value on every edit (the field stays uncontrolled). */
+  onValueChange?: (value: string) => void;
 }) {
   return (
     <div className="space-y-1">
@@ -120,6 +123,7 @@ export function TextField({
         defaultValue={defaultValue}
         maxLength={maxLength}
         inputMode={inputMode}
+        onChange={onValueChange ? (e) => onValueChange(e.currentTarget.value) : undefined}
         autoComplete="off"
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}
@@ -145,12 +149,14 @@ export function TextAreaField({
   error,
   defaultValue,
   maxLength,
+  onValueChange,
 }: {
   id: string;
   label: string;
   error?: string;
   defaultValue: string;
   maxLength: number;
+  onValueChange?: (value: string) => void;
 }) {
   return (
     <div className="space-y-1">
@@ -163,6 +169,7 @@ export function TextAreaField({
         rows={3}
         defaultValue={defaultValue}
         maxLength={maxLength}
+        onChange={onValueChange ? (e) => onValueChange(e.currentTarget.value) : undefined}
         aria-invalid={error ? true : undefined}
         aria-describedby={error ? `${id}-error` : undefined}
         className={INPUT}
@@ -181,18 +188,26 @@ export function SelectField({
   label,
   defaultValue,
   options,
+  onValueChange,
 }: {
   id: string;
   label: string;
   defaultValue: string;
   options: Array<{ value: string; label: string }>;
+  onValueChange?: (value: string) => void;
 }) {
   return (
     <div className="space-y-1">
       <label htmlFor={id} className="block text-sm font-medium">
         {label}
       </label>
-      <select id={id} name={id} defaultValue={defaultValue} className={INPUT}>
+      <select
+        id={id}
+        name={id}
+        defaultValue={defaultValue}
+        onChange={onValueChange ? (e) => onValueChange(e.currentTarget.value) : undefined}
+        className={INPUT}
+      >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}

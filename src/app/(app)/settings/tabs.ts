@@ -1,10 +1,10 @@
-/** Settings sections. Later tasks append their own tabs here (Receipt preview, Users, Audit). */
+/** Settings sections. Later tasks append their own tabs here (Users, Audit). */
 export const SETTINGS_TABS = [
   { id: "shop", label: "Shop" },
   { id: "numbering", label: "Numbering" },
   { id: "gst", label: "GST" },
   { id: "discounts", label: "Discounts" },
-  { id: "receipt", label: "Receipt text" },
+  { id: "receipt", label: "Receipt" },
 ] as const;
 
 export type SettingsTabId = (typeof SETTINGS_TABS)[number]["id"];

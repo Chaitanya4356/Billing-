@@ -118,7 +118,7 @@ test("all tabs render and the cashier cannot open settings", async ({ page, brow
     ["Numbering", "Bill prefix"],
     ["GST", "GST rate (%)"],
     ["Discounts", "Cashier flat discount limit (₹)"],
-    ["Receipt text", "Receipt footer"],
+    ["Receipt", "Receipt footer"],
   ] as const) {
     await page.getByRole("link", { name, exact: true }).click();
     await expect(page.getByLabel(label)).toBeVisible();

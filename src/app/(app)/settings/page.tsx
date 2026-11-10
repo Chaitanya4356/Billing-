@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { requirePageContext } from "@/modules/auth/page-guard";
 import { getSettings } from "@/modules/shop/service";
-import { DiscountsForm, GstForm, NumberingForm, ReceiptForm, ShopForm } from "./settings-forms";
+import { DiscountsForm, GstForm, NumberingForm, ShopForm } from "./settings-forms";
+import { ReceiptTab } from "./ReceiptTab";
 import { resolveTab, SETTINGS_TABS } from "./tabs";
 
 export const metadata: Metadata = { title: "Settings · Billing" };
@@ -38,7 +39,7 @@ export default async function SettingsPage({
         {tab === "numbering" ? <NumberingForm settings={settings} /> : null}
         {tab === "gst" ? <GstForm settings={settings} /> : null}
         {tab === "discounts" ? <DiscountsForm settings={settings} /> : null}
-        {tab === "receipt" ? <ReceiptForm settings={settings} /> : null}
+        {tab === "receipt" ? <ReceiptTab shop={shop} settings={settings} /> : null}
       </section>
     </div>
   );

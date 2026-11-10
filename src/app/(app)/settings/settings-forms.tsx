@@ -172,31 +172,3 @@ export function DiscountsForm({ settings }: { settings: ShopSettingsRow }) {
     </SettingsForm>
   );
 }
-
-export function ReceiptForm({ settings }: { settings: ShopSettingsRow }) {
-  const form = useSettingsForm((d) =>
-    buildResult({
-      receiptTitle: text(d, "receiptTitle"),
-      receiptHeader: text(d, "receiptHeader"),
-      receiptFooter: text(d, "receiptFooter"),
-      paperWidth: text(d, "paperWidth") === "58" ? 58 : 80,
-    }),
-  );
-  const { errors } = form;
-  return (
-    <SettingsForm form={form}>
-      <TextField id="receiptTitle" label="Receipt title" defaultValue={settings.receiptTitle} maxLength={60} error={errors.receiptTitle} />
-      <TextAreaField id="receiptHeader" label="Receipt header" defaultValue={settings.receiptHeader} maxLength={200} error={errors.receiptHeader} />
-      <TextAreaField id="receiptFooter" label="Receipt footer" defaultValue={settings.receiptFooter} maxLength={200} error={errors.receiptFooter} />
-      <SelectField
-        id="paperWidth"
-        label="Paper width"
-        defaultValue={String(settings.paperWidth)}
-        options={[
-          { value: "58", label: "58 mm" },
-          { value: "80", label: "80 mm" },
-        ]}
-      />
-    </SettingsForm>
-  );
-}
