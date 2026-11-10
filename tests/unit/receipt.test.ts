@@ -246,6 +246,32 @@ describe("renderReceiptHtml", () => {
     expect(html).toContain("₹1.19");
   });
 
+  describe.each([58, 80] as const)("inclusive GST note (%imm)", (width) => {
+    const gst = { rateBp: 500, taxablePaise: 9524, cgstPaise: 238, sgstPaise: 238 };
+
+    it("prints 'Prices include GST' under the GST lines when GST is inclusive", () => {
+      const html = renderReceiptHtml(receipt({ gst: { ...gst, inclusive: true } }), width);
+      expect(html).toContain(`<div class="line">Prices include GST</div>`);
+      const sgst = html.indexOf("SGST 2.5%");
+      const note = html.indexOf("Prices include GST");
+      const total = html.indexOf("TOTAL");
+      expect(sgst).toBeGreaterThan(-1);
+      expect(note).toBeGreaterThan(sgst);
+      expect(total).toBeGreaterThan(note);
+    });
+
+    it("prints no inclusive note when GST is exclusive", () => {
+      const html = renderReceiptHtml(receipt({ gst: { ...gst, inclusive: false } }), width);
+      expect(html).toContain("SGST 2.5%");
+      expect(html).not.toMatch(/include GST/i);
+    });
+
+    it("prints neither GST lines nor the note when GST is disabled", () => {
+      const html = renderReceiptHtml(receipt({ gst: null }), width);
+      expect(html).not.toMatch(/CGST|SGST|Taxable value|include GST/i);
+    });
+  });
+
   it("formats half rates without floating point artefacts", () => {
     const rate = (rateBp: number) =>
       renderReceiptHtml(

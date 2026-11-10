@@ -100,6 +100,9 @@ export function renderReceiptHtml(data: ReceiptData, paperWidth: 58 | 80): strin
     out.push(row("Taxable value", formatPaise(data.gst.taxablePaise)));
     out.push(row(`CGST ${pct}%`, formatPaise(data.gst.cgstPaise)));
     out.push(row(`SGST ${pct}%`, formatPaise(data.gst.sgstPaise)));
+    // Inclusive pricing: the tax is already inside the subtotal, so say so (otherwise the
+    // receipt reads like an arithmetic error: Subtotal == TOTAL despite CGST/SGST lines).
+    if (data.gst.inclusive) out.push(`<div class="line">Prices include GST</div>`);
   }
   if (data.roundOffPaise !== 0) out.push(row("Round off", formatPaise(data.roundOffPaise)));
   out.push(row("TOTAL", formatPaise(data.totalPaise), "row total"));
