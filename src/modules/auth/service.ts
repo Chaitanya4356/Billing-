@@ -1,5 +1,5 @@
-import { and, asc, eq, lte } from "drizzle-orm";
-import { db } from "@/db/client";
+import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { db, type Tx } from "@/db/client";
 import { sessions, shops, users } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import type { AuthContext } from "@/lib/types";
@@ -32,15 +32,32 @@ async function safeVerify(password: string, hash: string): Promise<boolean> {
   }
 }
 
-type Outcome =
-  | { kind: "ok"; result: { token: string; expiresAt: Date; ctx: AuthContext } }
-  | { kind: "invalid" }
-  | { kind: "locked" };
+/**
+ * Short transactions only (no argon2 inside), and never wait long on a row
+ * lock: the row is only held for the duration of one UPDATE + audit insert.
+ */
+async function shortTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
+    return fn(tx);
+  });
+}
+
+/** SQL predicate: the account is not locked at `now`. */
+function notLockedAt(now: Date) {
+  return or(isNull(users.lockedUntil), lte(users.lockedUntil, now));
+}
 
 /**
  * Single-shop login: the shop is the first row of `shops`, the username is
  * matched lowercased within it. Throws UNAUTHENTICATED (same message for an
  * unknown user, wrong password or inactive user) or LOCKED.
+ *
+ * argon2 runs with no transaction open and no row lock held. The outcome is
+ * then applied with a single conditional UPDATE guarded by "not locked at
+ * now"; those UPDATEs are the authority on lockout, so concurrent attempts
+ * cannot exceed MAX_FAILED_ATTEMPTS guesses and a correct password cannot
+ * succeed once a concurrent failure has locked the account.
  */
 export async function login(
   username: string,
@@ -61,101 +78,122 @@ export async function login(
     throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
   }
 
-  const outcome = await db.transaction(async (tx): Promise<Outcome> => {
-    // Row lock serialises concurrent attempts on one account so the failure
-    // counter cannot be raced past the lockout threshold.
-    const [user] = await tx
-      .select()
-      .from(users)
-      .where(and(eq(users.shopId, shop.id), eq(users.username, uname)))
-      .limit(1)
-      .for("update");
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.shopId, shop.id), eq(users.username, uname)))
+    .limit(1);
 
-    if (!user) {
-      await safeVerify(pw, DUMMY_HASH);
-      await recordAudit(tx, {
-        shopId: shop.id,
-        userId: null,
-        action: "LOGIN_FAILED",
-        entityType: "user",
-        entityId: null,
-        meta: { username: uname },
-      });
-      return { kind: "invalid" };
-    }
+  if (!user) {
+    await safeVerify(pw, DUMMY_HASH);
+    await recordAudit(db, {
+      shopId: shop.id,
+      userId: null,
+      action: "LOGIN_FAILED",
+      entityType: "user",
+      entityId: null,
+      meta: { username: uname },
+    });
+    throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
+  }
 
-    if (user.lockedUntil && user.lockedUntil.getTime() > now.getTime()) {
-      await recordAudit(tx, {
-        shopId: user.shopId,
-        userId: user.id,
-        action: "LOGIN_LOCKED",
-        entityType: "user",
-        entityId: user.id,
-        meta: { username: uname, lockedUntil: user.lockedUntil.toISOString() },
-      });
-      return { kind: "locked" };
-    }
+  const rejectLocked = async (lockedUntil: Date | null): Promise<never> => {
+    await recordAudit(db, {
+      shopId: user.shopId,
+      userId: user.id,
+      action: "LOGIN_LOCKED",
+      entityType: "user",
+      entityId: user.id,
+      meta: {
+        username: uname,
+        reason: "ALREADY_LOCKED",
+        ...(lockedUntil ? { lockedUntil: lockedUntil.toISOString() } : {}),
+      },
+    });
+    throw new AppError("LOCKED", LOCKED_MESSAGE);
+  };
 
-    const passwordOk = await safeVerify(pw, user.passwordHash);
+  // Unlocked read, only to skip argon2 work for an already-locked account.
+  // The password is not checked here, so LOCKED reveals nothing about it.
+  if (user.lockedUntil && user.lockedUntil.getTime() > now.getTime()) {
+    await rejectLocked(user.lockedUntil);
+  }
 
-    if (!user.isActive) {
-      await recordAudit(tx, {
-        shopId: user.shopId,
-        userId: user.id,
-        action: "LOGIN_FAILED",
-        entityType: "user",
-        entityId: user.id,
-        meta: { username: uname, reason: "INACTIVE" },
-      });
-      return { kind: "invalid" };
-    }
+  const passwordOk = await safeVerify(pw, user.passwordHash);
 
-    if (!passwordOk) {
-      const attempts = user.failedAttempts + 1;
-      const lockNow = attempts >= MAX_FAILED_ATTEMPTS;
-      const lockedUntil = lockNow ? new Date(now.getTime() + LOCKOUT_MINUTES * 60_000) : user.lockedUntil;
-      // On locking, the counter restarts so the next window gets a fresh 5 tries.
-      await tx
+  if (!user.isActive) {
+    await recordAudit(db, {
+      shopId: user.shopId,
+      userId: user.id,
+      action: "LOGIN_FAILED",
+      entityType: "user",
+      entityId: user.id,
+      meta: { username: uname, reason: "INACTIVE" },
+    });
+    throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
+  }
+
+  if (!passwordOk) {
+    const lockUntil = new Date(now.getTime() + LOCKOUT_MINUTES * 60_000);
+    // In SET, column references read the pre-update row. On reaching the
+    // threshold the counter restarts at 0 and the lock window is set.
+    const reachesLimit = sql`${users.failedAttempts} + 1 >= ${MAX_FAILED_ATTEMPTS}`;
+    const result = await shortTx(async (tx) => {
+      const [row] = await tx
         .update(users)
-        .set({ failedAttempts: lockNow ? 0 : attempts, lockedUntil })
-        .where(eq(users.id, user.id));
+        .set({
+          failedAttempts: sql`CASE WHEN ${reachesLimit} THEN 0 ELSE ${users.failedAttempts} + 1 END`,
+          lockedUntil: sql`CASE WHEN ${reachesLimit} THEN ${lockUntil.toISOString()}::timestamptz ELSE ${users.lockedUntil} END`,
+        })
+        .where(and(eq(users.id, user.id), notLockedAt(now)))
+        .returning({ failedAttempts: users.failedAttempts, lockedUntil: users.lockedUntil });
+      if (!row) return { kind: "locked" as const };
+
+      const lockedNow = !!row.lockedUntil && row.lockedUntil.getTime() > now.getTime();
       await recordAudit(tx, {
         shopId: user.shopId,
         userId: user.id,
         action: "LOGIN_FAILED",
         entityType: "user",
         entityId: user.id,
-        meta: { username: uname, failedAttempts: attempts },
+        meta: { username: uname, failedAttempts: lockedNow ? MAX_FAILED_ATTEMPTS : row.failedAttempts },
       });
-      if (lockNow) {
+      if (lockedNow) {
         await recordAudit(tx, {
           shopId: user.shopId,
           userId: user.id,
           action: "LOGIN_LOCKED",
           entityType: "user",
           entityId: user.id,
-          meta: { username: uname, lockedUntil: lockedUntil!.toISOString() },
+          meta: { username: uname, reason: "THRESHOLD", lockedUntil: row.lockedUntil!.toISOString() },
         });
-        return { kind: "locked" };
+        return { kind: "lockedNow" as const };
       }
-      return { kind: "invalid" };
-    }
+      return { kind: "invalid" as const };
+    });
+    // Thrown after commit so the audit rows persist.
+    if (result.kind === "locked") await rejectLocked(null);
+    if (result.kind === "lockedNow") throw new AppError("LOCKED", LOCKED_MESSAGE);
+    throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
+  }
 
-    await tx
+  const session = await shortTx(async (tx) => {
+    // Same not-locked guard: a correct guess racing a concurrent lock loses.
+    const [row] = await tx
       .update(users)
       .set({ failedAttempts: 0, lockedUntil: null })
-      .where(eq(users.id, user.id));
+      .where(and(eq(users.id, user.id), notLockedAt(now)))
+      .returning({ id: users.id });
+    if (!row) return null;
     // Lazily drop this user's expired sessions.
     await tx.delete(sessions).where(and(eq(sessions.userId, user.id), lte(sessions.expiresAt, now)));
-    const { token, expiresAt } = await createSession(tx, user.id, now);
-    return {
-      kind: "ok",
-      result: { token, expiresAt, ctx: { shopId: user.shopId, userId: user.id, role: user.role } },
-    };
+    return createSession(tx, user.id, now);
   });
+  if (!session) await rejectLocked(null);
 
-  // Thrown outside the transaction so the audit rows above are committed.
-  if (outcome.kind === "locked") throw new AppError("LOCKED", LOCKED_MESSAGE);
-  if (outcome.kind === "invalid") throw new AppError("UNAUTHENTICATED", INVALID_CREDENTIALS);
-  return outcome.result;
+  return {
+    token: session!.token,
+    expiresAt: session!.expiresAt,
+    ctx: { shopId: user.shopId, userId: user.id, role: user.role },
+  };
 }

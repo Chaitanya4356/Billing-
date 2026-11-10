@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { auditLogs, sessions, users } from "@/db/schema";
 import { AppError } from "@/lib/errors";
-import { login } from "@/modules/auth/service";
+import { LOCKOUT_MINUTES, MAX_FAILED_ATTEMPTS, login } from "@/modules/auth/service";
 import {
   SESSION_TTL_HOURS,
   hashToken,
@@ -140,6 +140,52 @@ describe("login", () => {
     expect(res.ctx).toEqual(t.cashier.ctx);
   });
 
+  it("12 parallel wrong passwords: exactly 5 counted, one lock transition, the rest LOCKED", async () => {
+    const results = await Promise.allSettled(
+      Array.from({ length: 12 }, (_, i) => login("owner", `wrong-${i}`, T0)),
+    );
+    const codes = results.map((r) => {
+      expect(r.status).toBe("rejected");
+      const e = (r as PromiseRejectedResult).reason;
+      expect(e).toBeInstanceOf(AppError);
+      return (e as AppError).code;
+    });
+    const unauth = codes.filter((c) => c === "UNAUTHENTICATED").length;
+    const locked = codes.filter((c) => c === "LOCKED").length;
+    expect(unauth + locked).toBe(12);
+    // Only 5 attempts were evaluated as failures; the 5th of them locked.
+    expect(unauth).toBe(MAX_FAILED_ATTEMPTS - 1);
+    const failed = (await auditRows("LOGIN_FAILED")).filter((r) => r.userId === t.owner.id);
+    expect(failed).toHaveLength(MAX_FAILED_ATTEMPTS);
+    const transitions = (await auditRows("LOGIN_LOCKED")).filter(
+      (r) => (r.meta as { reason?: string }).reason === "THRESHOLD",
+    );
+    expect(transitions).toHaveLength(1);
+
+    const row = await userRow(t.owner.id);
+    expect(row.lockedUntil?.getTime()).toBe(minutes(T0, LOCKOUT_MINUTES).getTime());
+    expect(row.failedAttempts).toBe(0);
+    await expectAppError(login("owner", "owner-pass-123", T0), "LOCKED");
+  });
+
+  it("a correct password cannot succeed once the account is locked between read and update", async () => {
+    // Simulate the race: the account becomes locked after login() has read the
+    // user row but before it applies the outcome. The conditional UPDATE must
+    // refuse, so we lock it in parallel with argon2 running.
+    const attempt = login("owner", "owner-pass-123", T0);
+    await db
+      .update(users)
+      .set({ lockedUntil: minutes(T0, LOCKOUT_MINUTES) })
+      .where(eq(users.id, t.owner.id));
+    const outcome = await attempt.then(
+      () => "ok",
+      (e: AppError) => e.code,
+    );
+    // Either the pre-check or the conditional update saw the lock.
+    expect(outcome).toBe("LOCKED");
+    expect(await db.select().from(sessions)).toHaveLength(0);
+  });
+
   it("a deactivated user cannot log in, even with the correct password", async () => {
     await db.update(users).set({ isActive: false }).where(eq(users.id, t.cashier.id));
     const err = await expectAppError(login("cashier", "cashier-pass-123", T0), "UNAUTHENTICATED");
@@ -165,6 +211,12 @@ describe("sessions", () => {
     const { token } = await login("owner", "owner-pass-123", T0);
     expect(await validateSession(token, hours(T0, 13))).toBeNull();
     expect(await db.select().from(sessions)).toHaveLength(0);
+  });
+
+  it("validateSession returns null at exactly expiresAt and ctx one millisecond before", async () => {
+    const { token, expiresAt } = await login("owner", "owner-pass-123", T0);
+    expect(await validateSession(token, new Date(expiresAt.getTime() - 1))).toEqual(t.owner.ctx);
+    expect(await validateSession(token, expiresAt)).toBeNull();
   });
 
   it("validateSession returns null for unknown or empty tokens", async () => {
