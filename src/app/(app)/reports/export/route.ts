@@ -1,4 +1,4 @@
-import { AppError } from "@/lib/errors";
+import { AppError, describeError } from "@/lib/errors";
 import type { AuthContext } from "@/lib/types";
 import { requireContext } from "@/modules/auth/guards";
 import { currentBusinessDate } from "@/modules/bills/service";
@@ -25,7 +25,7 @@ function failure(e: unknown): Response {
     if (e.code === "FORBIDDEN") return text(403, "Not allowed.");
     if (e.code === "VALIDATION") return text(400, "Invalid period or date.");
   }
-  console.error(e);
+  console.error("[reports/export] unhandled error", describeError(e));
   return text(500, "Could not export the report.");
 }
 
