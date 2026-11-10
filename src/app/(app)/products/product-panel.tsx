@@ -5,7 +5,7 @@ import { createProductAction, deleteProductAction, updateProductAction } from "@
 import { buildProductInput, type ProductFormErrors } from "@/modules/catalog/form-parse";
 import type { CategoryRow, ProductRow } from "@/modules/catalog/service";
 import { paiseToRupeeInput } from "@/modules/shop/form-parse";
-import { SelectField, text, TextField } from "../settings/form-kit";
+import { SelectField, text, TextField } from "@/components/form-kit";
 
 /**
  * Add/edit slide-over: a native modal <dialog> pinned to the right edge, which

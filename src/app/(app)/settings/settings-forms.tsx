@@ -18,7 +18,7 @@ import {
   TextField,
   useSettingsForm,
   type FieldErrors,
-} from "./form-kit";
+} from "@/components/form-kit";
 
 export function ShopForm({ shop }: { shop: ShopInfo }) {
   const form = useSettingsForm((d) =>

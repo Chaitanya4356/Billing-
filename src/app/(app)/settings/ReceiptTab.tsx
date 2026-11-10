@@ -13,7 +13,7 @@ import {
   TextAreaField,
   TextField,
   useSettingsForm,
-} from "./form-kit";
+} from "@/components/form-kit";
 
 /**
  * Receipt settings with a live preview. The preview and Test Print are built
