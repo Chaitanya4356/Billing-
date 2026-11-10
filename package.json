@@ -14,7 +14,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:migrate:test": "drizzle-kit migrate --config=drizzle.test.config.ts",
-    "seed": "tsx scripts/seed.ts"
+    "seed": "tsx scripts/seed.ts",
+    "backup": "tsx scripts/backup.ts",
+    "backup:verify": "tsx scripts/restore-check.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "2.2.2",
