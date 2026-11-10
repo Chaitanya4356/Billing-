@@ -1,7 +1,6 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { config } from "dotenv";
 import {
   backupFileName,
@@ -61,13 +60,10 @@ async function main(): Promise<void> {
   console.log(`retention: ${keepDays} days, pruned ${expired.length} file(s)`);
 }
 
-// Only run when executed directly (npm run backup), never when imported.
-const entry = process.argv[1];
-if (entry && import.meta.url === pathToFileURL(path.resolve(entry)).href) {
-  main()
-    .then(() => process.exit(0))
-    .catch((err: unknown) => {
-      console.error(`backup FAILED: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
-    });
-}
+// Entry point: runs unconditionally. Any rejection prints the failure and exits 1 (fail closed).
+main()
+  .then(() => process.exit(0))
+  .catch((err: unknown) => {
+    console.error(`backup FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });

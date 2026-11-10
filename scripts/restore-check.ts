@@ -1,7 +1,6 @@
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { config } from "dotenv";
 import { Client } from "pg";
 import {
@@ -100,13 +99,10 @@ async function main(): Promise<number> {
   return 0;
 }
 
-// Only run when executed directly (npm run backup:verify), never when imported.
-const entry = process.argv[1];
-if (entry && import.meta.url === pathToFileURL(path.resolve(entry)).href) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((err: unknown) => {
-      console.error(`restore check FAILED: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
-    });
-}
+// Entry point: runs unconditionally. Any rejection prints the failure and exits 1 (fail closed).
+main()
+  .then((code) => process.exit(code))
+  .catch((err: unknown) => {
+    console.error(`restore check FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
