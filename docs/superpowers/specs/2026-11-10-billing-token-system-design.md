@@ -102,14 +102,14 @@ All money is stored as **integer paise**. All timestamps are `timestamptz` (UTC)
 | `users` | id, shop_id, name, username (unique per shop), password_hash, role (OWNER/CASHIER), is_active, created_at |
 | `categories` | id, shop_id, name, sort_order, is_active |
 | `products` | id, shop_id, category_id, name, price_paise, short_code, sort_order, is_active, deleted_at |
-| `bills` | id (uuid), shop_id, bill_number (int), bill_number_display, token_number, business_date, status (COMPLETED/CANCELLED), subtotal_paise, discount_type, discount_value, discount_paise, taxable_paise, cgst_paise, sgst_paise, tax_paise, round_off_paise, total_paise, customer_name, customer_phone, created_by, created_at, cancelled_by, cancelled_at, cancel_reason, print_count, last_printed_at, idempotency_key, shop_snapshot (jsonb), gst_snapshot (jsonb) |
+| `bills` | id (uuid), shop_id, financial_year (e.g. `2026-27`), bill_number (int, restarts each financial year), bill_number_display, token_number, business_date, status (COMPLETED/CANCELLED), subtotal_paise, discount_type, discount_value, discount_paise, taxable_paise, cgst_paise, sgst_paise, tax_paise, round_off_paise, total_paise, customer_name, customer_phone, created_by, created_at, cancelled_by, cancelled_at, cancel_reason, print_count, last_printed_at, idempotency_key, shop_snapshot (jsonb), gst_snapshot (jsonb) |
 | `bill_items` | id, bill_id, product_id (nullable, no cascade), product_name, category_name, unit_price_paise, quantity, line_total_paise, sort_order |
 | `payments` | id, bill_id, method (CASH/UPI), amount_paise, cash_tendered_paise, change_paise, upi_reference, status (RECORDED/VOIDED), created_at |
 | `number_sequences` | shop_id, key (e.g. `bill:2026-27`, `token:2026-11-10`), last_value; PK (shop_id, key) |
 | `audit_logs` | id, shop_id, user_id, action, entity_type, entity_id, meta (jsonb), created_at |
 
 ### Constraints and indexes
-- `UNIQUE(shop_id, bill_number)`, `UNIQUE(shop_id, business_date, token_number)`, `UNIQUE(shop_id, idempotency_key)`, `UNIQUE(shop_id, username)`.
+- `UNIQUE(shop_id, financial_year, bill_number)`, `UNIQUE(shop_id, business_date, token_number)`, `UNIQUE(shop_id, idempotency_key)`, `UNIQUE(shop_id, username)`.
 - CHECKs: `quantity > 0`, `unit_price_paise >= 0`, `total_paise >= 0`, and `total = subtotal - discount + tax + round_off` (exclusive GST) or the equivalent for inclusive GST as defined in section 8.
 - Indexes: `bills(shop_id, business_date)`, `bills(shop_id, created_at DESC)`, `bills(shop_id, bill_number)`, `bill_items(bill_id)`, `payments(bill_id)`, `products(shop_id, category_id, is_active)`, `audit_logs(shop_id, created_at DESC)`.
 

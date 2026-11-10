@@ -7,6 +7,7 @@ import { seedShop } from "../../scripts/seed";
 
 interface BillOverrides {
   billNumber?: number;
+  financialYear?: string;
   tokenNumber?: number;
   businessDate?: string;
   idempotencyKey?: string;
@@ -29,12 +30,12 @@ async function insertBill(t: TestShop, o: BillOverrides = {}): Promise<string> {
   const total = o.totalPaise ?? subtotal - discount + (taxIncluded ? 0 : tax) + roundOff;
   const result = await db.execute<{ id: string }>(sql`
     INSERT INTO bills (
-      shop_id, bill_number, bill_number_display, token_number, business_date,
+      shop_id, financial_year, bill_number, bill_number_display, token_number, business_date,
       status, subtotal_paise, discount_paise, taxable_paise, cgst_paise,
       sgst_paise, tax_paise, round_off_paise, total_paise, tax_included,
       created_by, idempotency_key, shop_snapshot, gst_snapshot
     ) VALUES (
-      ${t.shopId}, ${billNumber}, ${"B-" + billNumber},
+      ${t.shopId}, ${o.financialYear ?? "2026-27"}, ${billNumber}, ${"B-" + billNumber},
       ${o.tokenNumber ?? 1}, ${o.businessDate ?? "2026-11-10"},
       'COMPLETED', ${subtotal}, ${discount}, ${subtotal - discount}, 0,
       0, ${tax}, ${roundOff}, ${total}, ${taxIncluded},
@@ -76,11 +77,22 @@ describe("schema constraints", () => {
     t = await makeShop();
   });
 
-  it("rejects a duplicate (shop_id, bill_number)", async () => {
+  it("rejects a duplicate (shop_id, financial_year, bill_number) but accepts the number in another FY", async () => {
     await insertBill(t, { billNumber: 1, tokenNumber: 1, idempotencyKey: "a" });
+    const err = await insertBill(t, { billNumber: 1, tokenNumber: 2, idempotencyKey: "b" }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(pgCode(err)).toBe("23505");
     await expect(
-      insertBill(t, { billNumber: 1, tokenNumber: 2, idempotencyKey: "b" }),
-    ).rejects.toThrow();
+      insertBill(t, {
+        billNumber: 1,
+        financialYear: "2027-28",
+        tokenNumber: 1,
+        businessDate: "2027-04-01",
+        idempotencyKey: "c",
+      }),
+    ).resolves.toBeTruthy();
   });
 
   it("rejects a duplicate token on the same business date but accepts it on another date", async () => {

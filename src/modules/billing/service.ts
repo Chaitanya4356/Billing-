@@ -10,6 +10,7 @@ import { assertRole } from "@/modules/auth/guards";
 import { getBillDetail } from "@/modules/bills/repo";
 import type { BillDetail, GstSnapshot, ShopSnapshot } from "@/modules/bills/types";
 import { calculateTotals } from "./calc";
+import type { Totals } from "./calc";
 import { createBillSchema } from "./schema";
 import type { CreateBillInput, ParsedCreateBillInput } from "./schema";
 import { billSequenceKey, nextSequenceValue, tokenSequenceKey } from "./sequences";
@@ -109,12 +110,48 @@ async function loadLines(shopId: string, input: ParsedCreateBillInput): Promise<
   });
 }
 
+type SettingsRow = typeof shopSettings.$inferSelect;
+
+interface Priced {
+  totals: Totals;
+  gst: { enabled: boolean; rateBp: number; inclusive: boolean };
+}
+
+/**
+ * Pure: the cashier discount limit, totals and payment check for one settings
+ * row. Run before the transaction (early rejection, no numbers consumed) and
+ * again inside it on the locked row, whose result is what gets stored.
+ */
+function priceBill(
+  role: AuthContext["role"],
+  settings: SettingsRow,
+  lines: PricedLine[],
+  input: ParsedCreateBillInput,
+): Priced {
+  const { discount, payment } = input;
+  if (discount && role === "CASHIER") {
+    const limit = discount.type === "PERCENT" ? settings.cashierDiscountMaxPctBp : settings.cashierDiscountMaxFlatPaise;
+    if (discount.value > limit) {
+      throw new AppError("DISCOUNT_LIMIT", "This discount is above the cashier limit. Ask the owner to apply it.");
+    }
+  }
+
+  const gst = { enabled: settings.gstEnabled, rateBp: settings.gstRateBp, inclusive: settings.gstInclusive };
+  const totals = calculateTotals({ lines, discount, gst, roundToRupee: settings.roundToRupee });
+
+  if (payment.method === "CASH" && payment.cashTenderedPaise < totals.totalPaise) {
+    throw new AppError("INSUFFICIENT_CASH", "Cash tendered is less than the bill total");
+  }
+  return { totals, gst };
+}
+
 /**
  * Creates a bill. Both roles. Validation, price checks, discount limits, totals
  * and the payment check all happen before the transaction, so a rejected
- * charge consumes no numbers. The transaction: idempotency lookup, bill
- * counter, token counter, inserts and audit, commit. A replay of an already
- * used idempotency key (also a concurrent one) returns the existing bill.
+ * charge consumes no numbers. The transaction: idempotency lookup, settings
+ * locks (and a re-price on the locked settings), bill counter, token counter,
+ * inserts and audit, commit. A replay of an already used idempotency key
+ * (also a concurrent one) returns the existing bill.
  */
 export async function createBill(ctx: AuthContext, rawInput: CreateBillInput, now: Date = new Date()): Promise<BillDetail> {
   assertRole(ctx, ["OWNER", "CASHIER"]);
@@ -127,30 +164,14 @@ export async function createBill(ctx: AuthContext, rawInput: CreateBillInput, no
     if (existing) return existing;
   }
 
-  const [settings] = await db.select().from(shopSettings).where(eq(shopSettings.shopId, ctx.shopId));
-  const [shop] = await db.select().from(shops).where(eq(shops.id, ctx.shopId));
-  if (!settings || !shop) throw new AppError("NOT_FOUND", "Shop settings not found");
+  const [preSettings] = await db.select().from(shopSettings).where(eq(shopSettings.shopId, ctx.shopId));
+  if (!preSettings) throw new AppError("NOT_FOUND", "Shop settings not found");
 
   const lines = await loadLines(ctx.shopId, input);
+  // Early rejection before any counter is touched.
+  priceBill(ctx.role, preSettings, lines, input);
 
-  const { discount } = input;
-  if (discount && ctx.role === "CASHIER") {
-    const limit = discount.type === "PERCENT" ? settings.cashierDiscountMaxPctBp : settings.cashierDiscountMaxFlatPaise;
-    if (discount.value > limit) {
-      throw new AppError("DISCOUNT_LIMIT", "This discount is above the cashier limit. Ask the owner to apply it.");
-    }
-  }
-
-  const gst = { enabled: settings.gstEnabled, rateBp: settings.gstRateBp, inclusive: settings.gstInclusive };
-  const totals = calculateTotals({ lines, discount, gst, roundToRupee: settings.roundToRupee });
-
-  const { payment } = input;
-  if (payment.method === "CASH" && payment.cashTenderedPaise < totals.totalPaise) {
-    throw new AppError("INSUFFICIENT_CASH", "Cash tendered is less than the bill total");
-  }
-
-  const shopSnapshot: ShopSnapshot = { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin };
-  const gstSnapshot: GstSnapshot = { ...gst, title: settings.receiptTitle };
+  const { discount, payment } = input;
 
   try {
     return await db.transaction(async (tx) => {
@@ -160,42 +181,45 @@ export async function createBill(ctx: AuthContext, rawInput: CreateBillInput, no
         if (existing) return existing;
       }
 
-      // Numbering settings are read under a share lock so a concurrent
-      // tokenResetMode change (which locks these rows FOR UPDATE, shops first,
-      // then syncs the counters) serialises with this bill. Same lock order as
-      // updateSettings: shops, then shop_settings.
-      const [lockedShop] = await tx
-        .select({ timezone: shops.timezone })
-        .from(shops)
-        .where(eq(shops.id, ctx.shopId))
-        .for("key share");
-      const [numbering] = await tx
-        .select({
-          tokenResetMode: shopSettings.tokenResetMode,
-          dayStartHour: shopSettings.dayStartHour,
-          billPrefix: shopSettings.billPrefix,
-        })
+      // Settings are re-read under a share lock, so a concurrent
+      // updateSettings (which locks these rows FOR UPDATE, shops first) is
+      // serialised with this bill: a tokenResetMode switch syncs counters
+      // either before or after it, and nothing the bill stores can change
+      // until commit. Same lock order as updateSettings: shops, then
+      // shop_settings (otherwise the two could deadlock).
+      const [shop] = await tx.select().from(shops).where(eq(shops.id, ctx.shopId)).for("key share");
+      const [settings] = await tx
+        .select()
         .from(shopSettings)
         .where(eq(shopSettings.shopId, ctx.shopId))
         .for("share");
-      if (!lockedShop || !numbering) throw new AppError("NOT_FOUND", "Shop settings not found");
+      if (!shop || !settings) throw new AppError("NOT_FOUND", "Shop settings not found");
 
-      const businessDate = businessDateFor(now, lockedShop.timezone, numbering.dayStartHour);
+      // Totals, tax_included, payment amounts and both snapshots all come from
+      // this one locked read, so a stored bill is always consistent with its
+      // snapshots even if settings changed after the pre-check. A rejection
+      // here (e.g. cash now short) rolls back before any counter is used.
+      const { totals, gst } = priceBill(ctx.role, settings, lines, input);
+      const shopSnapshot: ShopSnapshot = { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin };
+      const gstSnapshot: GstSnapshot = { ...gst, title: settings.receiptTitle };
+
+      const businessDate = businessDateFor(now, shop.timezone, settings.dayStartHour);
       const fy = financialYearOf(businessDate);
       // Always bill counter first, then token counter.
       const billNumber = await nextSequenceValue(tx, ctx.shopId, billSequenceKey(fy));
       const tokenNumber = await nextSequenceValue(
         tx,
         ctx.shopId,
-        tokenSequenceKey(numbering.tokenResetMode, businessDate),
+        tokenSequenceKey(settings.tokenResetMode, businessDate),
       );
 
       const [bill] = await tx
         .insert(bills)
         .values({
           shopId: ctx.shopId,
+          financialYear: fy,
           billNumber,
-          billNumberDisplay: formatBillNumber(numbering.billPrefix, fy, billNumber),
+          billNumberDisplay: formatBillNumber(settings.billPrefix, fy, billNumber),
           tokenNumber,
           businessDate,
           status: "COMPLETED",

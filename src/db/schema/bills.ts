@@ -30,6 +30,8 @@ export const bills = pgTable(
     shopId: uuid("shop_id")
       .notNull()
       .references(() => shops.id),
+    /** Indian financial year of business_date, e.g. '2026-27'. Bill numbers restart each FY. */
+    financialYear: text("financial_year").notNull(),
     billNumber: integer("bill_number").notNull(),
     billNumberDisplay: text("bill_number_display").notNull(),
     tokenNumber: integer("token_number").notNull(),
@@ -62,7 +64,7 @@ export const bills = pgTable(
     gstSnapshot: jsonb("gst_snapshot").notNull(),
   },
   (t) => [
-    unique("bills_shop_id_bill_number_unique").on(t.shopId, t.billNumber),
+    unique("bills_shop_id_financial_year_bill_number_unique").on(t.shopId, t.financialYear, t.billNumber),
     unique("bills_shop_id_business_date_token_number_unique").on(t.shopId, t.businessDate, t.tokenNumber),
     unique("bills_shop_id_idempotency_key_unique").on(t.shopId, t.idempotencyKey),
     // Target for the composite (bill_id, shop_id) FKs on child tables.

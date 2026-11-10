@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
+import { Client } from "pg";
 import { beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/db/client";
 import { auditLogs, billItems, bills, numberSequences, payments } from "@/db/schema";
@@ -42,6 +43,48 @@ async function billCount(shopId: string): Promise<number> {
 async function sequenceCount(shopId: string): Promise<number> {
   const rows = await db.select().from(numberSequences).where(eq(numberSequences.shopId, shopId));
   return rows.length;
+}
+
+/** Polls until some backend in this database waits on a lock (createBill blocked inside its transaction). */
+async function waitForLockWaiter(): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    const r = await db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+    );
+    if (r.rows[0].n > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("createBill never blocked on the settings lock");
+}
+
+/**
+ * Deterministic interleaving: a second connection takes the same locks as
+ * updateSettings (shops FOR UPDATE) and changes shop_settings without
+ * committing. `run` (createBill) does its pre-transaction reads against the
+ * old committed settings, then blocks on its in-transaction share lock; only
+ * then is the change committed, so the bill transaction sees the new settings.
+ */
+async function interleaveSettingsChange<T>(
+  shopId: string,
+  settingsUpdate: string,
+  run: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  await c.connect();
+  try {
+    await c.query("BEGIN");
+    await c.query("SELECT 1 FROM shops WHERE id = $1 FOR UPDATE", [shopId]);
+    await c.query(`UPDATE shop_settings SET ${settingsUpdate} WHERE shop_id = $1`, [shopId]);
+    const pending = run().then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await waitForLockWaiter();
+    await c.query("COMMIT");
+    return await pending;
+  } finally {
+    await c.end();
+  }
 }
 
 describe("createBill", () => {
@@ -156,18 +199,21 @@ describe("createBill", () => {
       expect(await seq(t.shopId, "token:all")).toBe(3);
     });
 
-    // KNOWN ISSUE (reported to the controller): the counter key is `bill:<FY>`, so
-    // numbering restarts at 1 each financial year, but the schema's
-    // UNIQUE(shop_id, bill_number) has no FY component and the first bill of
-    // FY 2027-28 fails with a bill_number unique violation. Needs a schema
-    // decision (e.g. unique per shop + FY); un-skip once resolved.
-    it.skip("bill numbers restart in a new financial year; display uses the FY", async () => {
-      const march = await createBill(t.cashier.ctx, cash(), new Date("2027-03-31T12:00:00Z"));
-      expect(march.billNumberDisplay).toBe("B-2627-000001");
+    it("bill numbers restart in a new financial year; display uses the FY", async () => {
+      await createBill(t.cashier.ctx, cash(), new Date("2027-03-31T06:30:00Z"));
+      const march = await createBill(t.cashier.ctx, cash(), new Date("2027-03-31T06:30:00Z"));
+      expect(march.businessDate).toBe("2027-03-31");
+      expect(march.billNumber).toBe(2);
+      expect(march.billNumberDisplay).toBe("B-2627-000002");
       const april = await createBill(t.cashier.ctx, cash(), new Date("2027-04-01T06:30:00Z"));
       expect(april.businessDate).toBe("2027-04-01");
       expect(april.billNumber).toBe(1);
       expect(april.billNumberDisplay).toBe("B-2728-000001");
+      expect(april.tokenNumber).toBe(1);
+      const [row] = await db.select({ fy: bills.financialYear }).from(bills).where(eq(bills.id, april.id));
+      expect(row.fy).toBe("2027-28");
+      expect(await seq(t.shopId, "bill:2026-27")).toBe(2);
+      expect(await seq(t.shopId, "bill:2027-28")).toBe(1);
     });
 
     it("23:59:59 IST belongs to that date; 00:30 IST to the next date with token 1", async () => {
@@ -228,7 +274,7 @@ describe("createBill", () => {
 
     it("a bill_number unique violation is rethrown, not treated as an idempotent replay", async () => {
       await createBill(t.cashier.ctx, cash(), NOW);
-      // Corrupt the counter so the next bill collides on (shop_id, bill_number).
+      // Corrupt the counter so the next bill collides on (shop_id, financial_year, bill_number).
       await db
         .update(numberSequences)
         .set({ lastValue: 0 })
@@ -584,6 +630,77 @@ describe("createBill", () => {
       expect(b.customerName).toHaveLength(60);
       const u = await createBill(t.owner.ctx, upi({ payment: { method: "UPI", confirmed: true, reference: "r".repeat(40) } }), NOW);
       expect(u.payment.upiReference).toHaveLength(40);
+    });
+  });
+
+  describe("settings changed between the pre-check and the transaction", () => {
+    it("GST switched on: stored totals, tax_included, payment and gst_snapshot all use the locked settings", async () => {
+      const r = await interleaveSettingsChange(
+        t.shopId,
+        "gst_enabled = true, gst_rate_bp = 1800, gst_inclusive = false, receipt_title = 'GST Invoice'",
+        () => createBill(t.cashier.ctx, cash(), NOW), // pre-check: GST off, total 14500
+      );
+      if (!r.ok) throw r.error;
+      const b = r.value;
+      const expected = calculateTotals({
+        lines: [
+          { unitPricePaise: 6000, quantity: 2 },
+          { unitPricePaise: 2500, quantity: 1 },
+        ],
+        discount: null,
+        gst: { enabled: true, rateBp: 1800, inclusive: false },
+        roundToRupee: false,
+      });
+      expect(b.gstSnapshot).toEqual({ enabled: true, rateBp: 1800, inclusive: false, title: "GST Invoice" });
+      expect(b.taxIncluded).toBe(false);
+      expect(b.taxPaise).toBe(expected.taxPaise);
+      expect(b.taxPaise).toBe(2610);
+      expect(b.totalPaise).toBe(expected.totalPaise);
+      expect(b.totalPaise).toBe(17110);
+      expect(b.totalPaise).toBe(b.subtotalPaise - b.discountPaise + b.taxPaise + b.roundOffPaise);
+      expect(b.payment).toMatchObject({ amountPaise: 17110, cashTenderedPaise: 20000, changePaise: 2890 });
+      const [audit] = await db
+        .select()
+        .from(auditLogs)
+        .where(and(eq(auditLogs.shopId, t.shopId), eq(auditLogs.action, "BILL_CREATED")));
+      expect(audit.meta).toMatchObject({ totalPaise: 17110 });
+    });
+
+    it("GST raise makes the cash short: INSUFFICIENT_CASH inside the transaction, nothing consumed", async () => {
+      const r = await interleaveSettingsChange(
+        t.shopId,
+        "gst_enabled = true, gst_rate_bp = 10000, gst_inclusive = false",
+        () => createBill(t.cashier.ctx, cash(), NOW), // pre-check passes: 14500 <= 20000; locked: 29000
+      );
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error instanceof AppError && r.error.code).toBe("INSUFFICIENT_CASH");
+      expect(await billCount(t.shopId)).toBe(0);
+      expect(await sequenceCount(t.shopId)).toBe(0);
+      const next = await createBill(t.cashier.ctx, cash({ payment: { method: "CASH", cashTenderedPaise: 29000 } }), NOW);
+      expect(next.billNumber).toBe(1);
+      expect(next.tokenNumber).toBe(1);
+    });
+
+    it("cashier discount limit lowered: DISCOUNT_LIMIT inside the transaction, nothing consumed", async () => {
+      await updateSettings(t.owner.ctx, { cashierDiscountMaxPctBp: 1000 });
+      const r = await interleaveSettingsChange(t.shopId, "cashier_discount_max_pct_bp = 0", () =>
+        createBill(t.cashier.ctx, cash({ discount: { type: "PERCENT", value: 500 } }), NOW),
+      );
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.error instanceof AppError && r.error.code).toBe("DISCOUNT_LIMIT");
+      expect(await billCount(t.shopId)).toBe(0);
+      expect(await sequenceCount(t.shopId)).toBe(0);
+    });
+
+    it("rounding switched on: stored round-off matches the locked settings", async () => {
+      await updateSettings(t.owner.ctx, { gstEnabled: true, gstRateBp: 500, gstInclusive: false });
+      const r = await interleaveSettingsChange(t.shopId, "round_to_rupee = true", () =>
+        createBill(t.owner.ctx, cash(), NOW), // pre-check: 15225 unrounded
+      );
+      if (!r.ok) throw r.error;
+      expect(r.value.roundOffPaise).toBe(-25);
+      expect(r.value.totalPaise).toBe(15200);
+      expect(r.value.payment.amountPaise).toBe(15200);
     });
   });
 
