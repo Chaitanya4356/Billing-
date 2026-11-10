@@ -126,7 +126,7 @@ All money is stored as **integer paise**. All timestamps are `timestamptz` (UTC)
 
 ### Server: `createBill`
 1. Authenticate; take `shopId` and user from the session.
-2. Validate input with Zod. The client sends product IDs, quantities, discount, payment details, customer details and the idempotency key. **It never sends prices or totals.**
+2. Validate input with Zod. The client sends product IDs, quantities, discount, payment details, customer details and the idempotency key. **It never sends prices or totals for calculation.** It does send `expectedUnitPricePaise` per item and `expectedTotalPaise` (the prices and payable total the cart displayed); the server compares them with its own values and never uses them for calculation. A mismatch returns the "prices changed, please review" error and consumes nothing.
 3. Load current products; reject inactive, deleted or foreign-shop products. If a price differs from what the cart displayed, return a "prices changed, please review" error.
 4. Enforce discount limits for the cashier role. Compute all amounts with the single shared money function (section 8).
 5. Validate payment: cash tendered at least the total; UPI confirmation flag present.

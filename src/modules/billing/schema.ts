@@ -6,6 +6,8 @@ export const MAX_ITEMS = 100;
 export const MAX_QUANTITY = 999;
 /** Upper bound for cash tendered: keeps tendered and change inside Postgres int4. */
 export const MAX_CASH_TENDERED_PAISE = 2_000_000_000;
+/** Upper bound for the displayed total (the largest possible total is 2_000_000_050 only with rounding at the cap). */
+export const MAX_EXPECTED_TOTAL_PAISE = 2_000_000_000;
 
 const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, "Invalid id");
 
@@ -81,6 +83,15 @@ export const createBillSchema = z
         message: "Each product can appear only once",
       }),
     discount,
+    /**
+     * The payable total the cashier's screen displayed. Only compared with the
+     * server's total (mismatch: PRICE_CHANGED); never used for calculation.
+     */
+    expectedTotalPaise: z
+      .number()
+      .int("Expected total must be a whole number of paise")
+      .min(0, "Expected total cannot be negative")
+      .max(MAX_EXPECTED_TOTAL_PAISE, "Expected total is too large"),
     payment: z.discriminatedUnion("method", [cashPayment, upiPayment]),
     customerName: optionalText(60, "Customer name"),
     customerPhone: phone,

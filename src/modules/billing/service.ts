@@ -118,8 +118,8 @@ interface Priced {
 }
 
 /**
- * Pure: the cashier discount limit, totals and payment check for one settings
- * row. Run before the transaction (early rejection, no numbers consumed) and
+ * Pure: the cashier discount limit, totals, the expected-total comparison and
+ * the payment check for one settings row. Run before the transaction (early rejection, no numbers consumed) and
  * again inside it on the locked row, whose result is what gets stored.
  */
 function priceBill(
@@ -138,6 +138,18 @@ function priceBill(
 
   const gst = { enabled: settings.gstEnabled, rateBp: settings.gstRateBp, inclusive: settings.gstInclusive };
   const totals = calculateTotals({ lines, discount, gst, roundToRupee: settings.roundToRupee });
+
+  // The cart's item prices were already checked; this catches everything else
+  // that moves the total (GST on/rate/inclusive, rounding). Checked before the
+  // cash check so the cashier is never told cash is short for a total they
+  // were not shown.
+  if (input.expectedTotalPaise !== totals.totalPaise) {
+    throw new AppError(
+      "PRICE_CHANGED",
+      "The total changed (prices or tax/discount settings were updated). Please review the bill.",
+      { expectedTotalPaise: input.expectedTotalPaise, actualTotalPaise: totals.totalPaise },
+    );
+  }
 
   if (payment.method === "CASH" && payment.cashTenderedPaise < totals.totalPaise) {
     throw new AppError("INSUFFICIENT_CASH", "Cash tendered is less than the bill total");
@@ -197,8 +209,10 @@ export async function createBill(ctx: AuthContext, rawInput: CreateBillInput, no
 
       // Totals, tax_included, payment amounts and both snapshots all come from
       // this one locked read, so a stored bill is always consistent with its
-      // snapshots even if settings changed after the pre-check. A rejection
-      // here (e.g. cash now short) rolls back before any counter is used.
+      // snapshots even if settings changed after the pre-check. The total must
+      // still equal what the cashier displayed and collected (expectedTotalPaise).
+      // A rejection here (total changed, limit lowered) rolls back before any
+      // counter is touched: nextSequenceValue runs only after this line.
       const { totals, gst } = priceBill(ctx.role, settings, lines, input);
       const shopSnapshot: ShopSnapshot = { name: shop.name, address: shop.address, phone: shop.phone, gstin: shop.gstin };
       const gstSnapshot: GstSnapshot = { ...gst, title: settings.receiptTitle };

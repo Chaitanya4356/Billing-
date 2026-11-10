@@ -68,6 +68,7 @@ async function interleaveSettingsChange<T>(
   shopId: string,
   settingsUpdate: string,
   run: () => Promise<T>,
+  shopUpdate?: string,
 ): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
   const c = new Client({ connectionString: process.env.DATABASE_URL });
   await c.connect();
@@ -75,6 +76,7 @@ async function interleaveSettingsChange<T>(
     await c.query("BEGIN");
     await c.query("SELECT 1 FROM shops WHERE id = $1 FOR UPDATE", [shopId]);
     await c.query(`UPDATE shop_settings SET ${settingsUpdate} WHERE shop_id = $1`, [shopId]);
+    if (shopUpdate) await c.query(`UPDATE shops SET ${shopUpdate} WHERE id = $1`, [shopId]);
     const pending = run().then(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error }),
@@ -87,27 +89,53 @@ async function interleaveSettingsChange<T>(
   }
 }
 
+interface View {
+  gst: { enabled: boolean; rateBp: number; inclusive: boolean };
+  roundToRupee: boolean;
+}
+const GST_OFF: View = { gst: { enabled: false, rateBp: 500, inclusive: true }, roundToRupee: false };
+
 describe("createBill", () => {
   let t: TestShop;
   let dosa: string;
   let coffee: string;
 
+  /**
+   * What the cashier's screen displayed: the total computed, as the client
+   * does, from the cart's own displayed prices (expectedUnitPricePaise), the
+   * discount and the settings the screen was rendered with (default GST off,
+   * no rounding). Returns 0 for carts the calculation itself rejects.
+   */
+  function displayedTotal(input: Partial<CreateBillInput>, view: View = GST_OFF): number {
+    try {
+      return calculateTotals({
+        lines: (input.items ?? []).map((i) => ({ unitPricePaise: i.expectedUnitPricePaise, quantity: i.quantity })),
+        discount: input.discount ?? null,
+        gst: view.gst,
+        roundToRupee: view.roundToRupee,
+      }).totalPaise;
+    } catch {
+      return 0;
+    }
+  }
+
   /** 2 x Masala Dosa (60.00) + 1 x Filter Coffee (25.00) = 145.00, cash 200.00. */
-  function cash(over: Partial<CreateBillInput> = {}): CreateBillInput {
-    return {
+  function cash(over: Partial<CreateBillInput> = {}, view: View = GST_OFF): CreateBillInput {
+    const base = {
       idempotencyKey: randomUUID(),
       items: [
         { productId: dosa, quantity: 2, expectedUnitPricePaise: 6000 },
         { productId: coffee, quantity: 1, expectedUnitPricePaise: 2500 },
       ],
       discount: null,
-      payment: { method: "CASH", cashTenderedPaise: 20000 },
+      payment: { method: "CASH" as const, cashTenderedPaise: 20000 },
       ...over,
     };
+    return { expectedTotalPaise: displayedTotal(base, view), ...base };
   }
 
-  function upi(over: Partial<CreateBillInput> = {}): CreateBillInput {
-    return cash({ payment: { method: "UPI", confirmed: true, reference: "UTR123" }, ...over });
+  function upi(over: Partial<CreateBillInput> = {}, view: View = GST_OFF): CreateBillInput {
+    return cash({ payment: { method: "UPI", confirmed: true, reference: "UTR123" }, ...over }, view);
   }
 
   beforeEach(async () => {
@@ -263,6 +291,7 @@ describe("createBill", () => {
           idempotencyKey: randomUUID(),
           items: [{ productId: tea, quantity: 1, expectedUnitPricePaise: 1500 }],
           discount: null,
+          expectedTotalPaise: 1500,
           payment: { method: "CASH", cashTenderedPaise: 1500 },
         },
         NOW,
@@ -326,7 +355,7 @@ describe("createBill", () => {
       const tea = await makeProduct(other.shopId, { name: "Tea", pricePaise: 1500 });
       const b = await createBill(
         other.cashier.ctx,
-        { ...input, items: [{ productId: tea, quantity: 1, expectedUnitPricePaise: 1500 }] },
+        { ...input, items: [{ productId: tea, quantity: 1, expectedUnitPricePaise: 1500 }], expectedTotalPaise: 1500 },
         NOW,
       );
       expect(b.items[0].productName).toBe("Tea");
@@ -531,7 +560,8 @@ describe("createBill", () => {
   describe("GST", () => {
     it("exclusive 500bp stores tax, cgst, sgst, taxIncluded false; total matches calculateTotals", async () => {
       await updateSettings(t.owner.ctx, { gstEnabled: true, gstRateBp: 500, gstInclusive: false });
-      const b = await createBill(t.cashier.ctx, cash({ payment: { method: "CASH", cashTenderedPaise: 20000 } }), NOW);
+      const view: View = { gst: { enabled: true, rateBp: 500, inclusive: false }, roundToRupee: false };
+      const b = await createBill(t.cashier.ctx, cash({}, view), NOW);
       const expected = calculateTotals({
         lines: [
           { unitPricePaise: 6000, quantity: 2 },
@@ -555,11 +585,10 @@ describe("createBill", () => {
 
     it("inclusive GST with rounding: taxIncluded true and the stored row satisfies the total check", async () => {
       await updateSettings(t.owner.ctx, { gstEnabled: true, gstRateBp: 1800, gstInclusive: true, roundToRupee: true });
-      const b = await createBill(
-        t.owner.ctx,
-        cash({ discount: { type: "PERCENT", value: 333 } }),
-        NOW,
-      );
+      const view: View = { gst: { enabled: true, rateBp: 1800, inclusive: true }, roundToRupee: true };
+      const b = await createBill(t.owner.ctx, cash({ discount: { type: "PERCENT", value: 333 } }, view), NOW);
+      // 145.00 - 3.33% (4.83) = 140.17, rounded to 140.00
+      expect(b.totalPaise).toBe(14000);
       expect(b.taxIncluded).toBe(true);
       expect(b.totalPaise % 100).toBe(0);
       expect(b.totalPaise).toBe(b.subtotalPaise - b.discountPaise + b.roundOffPaise);
@@ -634,51 +663,58 @@ describe("createBill", () => {
   });
 
   describe("settings changed between the pre-check and the transaction", () => {
-    it("GST switched on: stored totals, tax_included, payment and gst_snapshot all use the locked settings", async () => {
-      const r = await interleaveSettingsChange(
-        t.shopId,
-        "gst_enabled = true, gst_rate_bp = 1800, gst_inclusive = false, receipt_title = 'GST Invoice'",
-        () => createBill(t.cashier.ctx, cash(), NOW), // pre-check: GST off, total 14500
-      );
-      if (!r.ok) throw r.error;
-      const b = r.value;
-      const expected = calculateTotals({
-        lines: [
-          { unitPricePaise: 6000, quantity: 2 },
-          { unitPricePaise: 2500, quantity: 1 },
-        ],
-        discount: null,
-        gst: { enabled: true, rateBp: 1800, inclusive: false },
-        roundToRupee: false,
-      });
-      expect(b.gstSnapshot).toEqual({ enabled: true, rateBp: 1800, inclusive: false, title: "GST Invoice" });
-      expect(b.taxIncluded).toBe(false);
-      expect(b.taxPaise).toBe(expected.taxPaise);
-      expect(b.taxPaise).toBe(2610);
-      expect(b.totalPaise).toBe(expected.totalPaise);
-      expect(b.totalPaise).toBe(17110);
-      expect(b.totalPaise).toBe(b.subtotalPaise - b.discountPaise + b.taxPaise + b.roundOffPaise);
-      expect(b.payment).toMatchObject({ amountPaise: 17110, cashTenderedPaise: 20000, changePaise: 2890 });
-      const [audit] = await db
+    function errorOf(r: { ok: true } | { ok: false; error: unknown }): AppError {
+      if (r.ok) throw new Error("expected createBill to fail");
+      expect(r.error).toBeInstanceOf(AppError);
+      return r.error as AppError;
+    }
+
+    async function expectNothingConsumed(): Promise<void> {
+      expect(await billCount(t.shopId)).toBe(0);
+      expect(await sequenceCount(t.shopId)).toBe(0);
+      const audits = await db
         .select()
         .from(auditLogs)
         .where(and(eq(auditLogs.shopId, t.shopId), eq(auditLogs.action, "BILL_CREATED")));
-      expect(audit.meta).toMatchObject({ totalPaise: 17110 });
-    });
+      expect(audits).toHaveLength(0);
+    }
 
-    it("GST raise makes the cash short: INSUFFICIENT_CASH inside the transaction, nothing consumed", async () => {
+    it("GST switched on (total moves): PRICE_CHANGED inside the transaction, nothing consumed", async () => {
       const r = await interleaveSettingsChange(
         t.shopId,
-        "gst_enabled = true, gst_rate_bp = 10000, gst_inclusive = false",
-        () => createBill(t.cashier.ctx, cash(), NOW), // pre-check passes: 14500 <= 20000; locked: 29000
+        "gst_enabled = true, gst_rate_bp = 1800, gst_inclusive = false",
+        () => createBill(t.cashier.ctx, cash(), NOW), // displayed and pre-checked: 145.00
       );
-      expect(r.ok).toBe(false);
-      expect(!r.ok && r.error instanceof AppError && r.error.code).toBe("INSUFFICIENT_CASH");
-      expect(await billCount(t.shopId)).toBe(0);
-      expect(await sequenceCount(t.shopId)).toBe(0);
-      const next = await createBill(t.cashier.ctx, cash({ payment: { method: "CASH", cashTenderedPaise: 29000 } }), NOW);
-      expect(next.billNumber).toBe(1);
-      expect(next.tokenNumber).toBe(1);
+      const err = errorOf(r);
+      expect(err.code).toBe("PRICE_CHANGED");
+      expect(err.details).toEqual({ expectedTotalPaise: 14500, actualTotalPaise: 17110 });
+      await expectNothingConsumed();
+      const view: View = { gst: { enabled: true, rateBp: 1800, inclusive: false }, roundToRupee: false };
+      const next = await createBill(t.cashier.ctx, cash({}, view), NOW);
+      expect([next.billNumber, next.tokenNumber, next.totalPaise]).toEqual([1, 1, 17110]);
+    });
+
+    it("UPI: a total that moved after the cart was priced is rejected, never stored as received", async () => {
+      const r = await interleaveSettingsChange(
+        t.shopId,
+        "gst_enabled = true, gst_rate_bp = 1800, gst_inclusive = false",
+        () => createBill(t.cashier.ctx, upi(), NOW),
+      );
+      expect(errorOf(r).code).toBe("PRICE_CHANGED");
+      await expectNothingConsumed();
+      expect(await db.select().from(payments).where(eq(payments.shopId, t.shopId))).toHaveLength(0);
+    });
+
+    it("rounding switched on (total moves): PRICE_CHANGED, nothing consumed", async () => {
+      await updateSettings(t.owner.ctx, { gstEnabled: true, gstRateBp: 500, gstInclusive: false });
+      const view: View = { gst: { enabled: true, rateBp: 500, inclusive: false }, roundToRupee: false };
+      const r = await interleaveSettingsChange(t.shopId, "round_to_rupee = true", () =>
+        createBill(t.owner.ctx, cash({}, view), NOW), // displayed 152.25
+      );
+      const err = errorOf(r);
+      expect(err.code).toBe("PRICE_CHANGED");
+      expect(err.details).toEqual({ expectedTotalPaise: 15225, actualTotalPaise: 15200 });
+      await expectNothingConsumed();
     });
 
     it("cashier discount limit lowered: DISCOUNT_LIMIT inside the transaction, nothing consumed", async () => {
@@ -686,21 +722,115 @@ describe("createBill", () => {
       const r = await interleaveSettingsChange(t.shopId, "cashier_discount_max_pct_bp = 0", () =>
         createBill(t.cashier.ctx, cash({ discount: { type: "PERCENT", value: 500 } }), NOW),
       );
-      expect(r.ok).toBe(false);
-      expect(!r.ok && r.error instanceof AppError && r.error.code).toBe("DISCOUNT_LIMIT");
+      expect(errorOf(r).code).toBe("DISCOUNT_LIMIT");
+      await expectNothingConsumed();
+    });
+
+    it("total unaffected (title, prefix, shop profile): bill succeeds with snapshots from the locked read", async () => {
+      const r = await interleaveSettingsChange(
+        t.shopId,
+        "receipt_title = 'Cash Memo', bill_prefix = 'KF'",
+        () => createBill(t.cashier.ctx, cash(), NOW),
+        "name = 'Renamed Shop', address = '12 New Road'",
+      );
+      if (!r.ok) throw r.error;
+      const b = r.value;
+      expect(b.totalPaise).toBe(14500);
+      expect(b.payment.amountPaise).toBe(14500);
+      expect(b.billNumberDisplay).toBe("KF-2627-000001");
+      expect(b.gstSnapshot).toEqual({ enabled: false, rateBp: 500, inclusive: true, title: "Cash Memo" });
+      expect(b.shopSnapshot).toEqual({ name: "Renamed Shop", address: "12 New Road", phone: "", gstin: null });
+    });
+
+    it("inclusive GST switched on (total unchanged): stored tax and snapshot come from the locked read", async () => {
+      const r = await interleaveSettingsChange(
+        t.shopId,
+        "gst_enabled = true, gst_rate_bp = 500, gst_inclusive = true",
+        () => createBill(t.cashier.ctx, cash(), NOW), // pre-check: GST off, 145.00
+      );
+      if (!r.ok) throw r.error;
+      const b = r.value;
+      // Inclusive 5% on 145.00: taxable round(14500 * 10000 / 10500) = 13810, tax 690.
+      expect(b.totalPaise).toBe(14500);
+      expect(b.taxIncluded).toBe(true);
+      expect(b.taxablePaise).toBe(13810);
+      expect(b.taxPaise).toBe(690);
+      expect([b.cgstPaise, b.sgstPaise]).toEqual([345, 345]);
+      expect(b.gstSnapshot).toEqual({ enabled: true, rateBp: 500, inclusive: true, title: "Tax Invoice" });
+      expect(b.totalPaise).toBe(b.subtotalPaise - b.discountPaise + b.roundOffPaise);
+      expect(b.payment).toMatchObject({ amountPaise: 14500, cashTenderedPaise: 20000, changePaise: 5500 });
+    });
+  });
+
+  describe("expectedTotalPaise", () => {
+    it("a mismatch before the transaction is PRICE_CHANGED with details; nothing consumed", async () => {
+      let err: unknown;
+      try {
+        await createBill(t.cashier.ctx, cash({ expectedTotalPaise: 14400 }), NOW);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(AppError);
+      expect((err as AppError).code).toBe("PRICE_CHANGED");
+      expect((err as AppError).details).toEqual({ expectedTotalPaise: 14400, actualTotalPaise: 14500 });
       expect(await billCount(t.shopId)).toBe(0);
       expect(await sequenceCount(t.shopId)).toBe(0);
     });
 
-    it("rounding switched on: stored round-off matches the locked settings", async () => {
+    it("a matching total succeeds", async () => {
+      const b = await createBill(t.cashier.ctx, cash({ expectedTotalPaise: 14500 }), NOW);
+      expect(b.totalPaise).toBe(14500);
+      expect(b.billNumber).toBe(1);
+    });
+
+    it("cart rendered before an owner's GST change and charged after it is rejected (cash and UPI)", async () => {
+      const cashCart = cash(); // displayed with GST off: 145.00
+      const upiCart = upi();
       await updateSettings(t.owner.ctx, { gstEnabled: true, gstRateBp: 500, gstInclusive: false });
-      const r = await interleaveSettingsChange(t.shopId, "round_to_rupee = true", () =>
-        createBill(t.owner.ctx, cash(), NOW), // pre-check: 15225 unrounded
+      expect(await code(createBill(t.cashier.ctx, cashCart, NOW))).toBe("PRICE_CHANGED");
+      expect(await code(createBill(t.cashier.ctx, upiCart, NOW))).toBe("PRICE_CHANGED");
+      expect(await billCount(t.shopId)).toBe(0);
+      expect(await sequenceCount(t.shopId)).toBe(0);
+    });
+
+    it("the expected total must reflect the discount", async () => {
+      const discount = { type: "FLAT" as const, value: 1000 };
+      // Displayed without the discount applied: rejected.
+      expect(await code(createBill(t.owner.ctx, cash({ discount, expectedTotalPaise: 14500 }), NOW))).toBe(
+        "PRICE_CHANGED",
       );
-      if (!r.ok) throw r.error;
-      expect(r.value.roundOffPaise).toBe(-25);
-      expect(r.value.totalPaise).toBe(15200);
-      expect(r.value.payment.amountPaise).toBe(15200);
+      const b = await createBill(t.owner.ctx, cash({ discount, expectedTotalPaise: 13500 }), NOW);
+      expect(b.discountPaise).toBe(1000);
+      expect(b.totalPaise).toBe(13500);
+      expect(b.payment.changePaise).toBe(6500);
+    });
+
+    it("an item price change is reported with item details before any total comparison", async () => {
+      await updateProduct(t.owner.ctx, coffee, { pricePaise: 3000 });
+      let err: unknown;
+      try {
+        await createBill(t.cashier.ctx, cash(), NOW);
+      } catch (e) {
+        err = e;
+      }
+      expect((err as AppError).code).toBe("PRICE_CHANGED");
+      expect(JSON.stringify((err as AppError).details)).toContain("Filter Coffee");
+      expect((err as AppError).details).not.toHaveProperty("expectedTotalPaise");
+    });
+
+    it("is required and validated", async () => {
+      const missing: Record<string, unknown> = { ...cash() };
+      delete missing.expectedTotalPaise;
+      for (const input of [
+        missing as unknown as CreateBillInput,
+        cash({ expectedTotalPaise: -1 }),
+        cash({ expectedTotalPaise: 145.5 }),
+        cash({ expectedTotalPaise: 2_000_000_001 }),
+        cash({ expectedTotalPaise: "14500" as unknown as number }),
+      ]) {
+        expect(await code(createBill(t.owner.ctx, input, NOW))).toBe("VALIDATION");
+      }
+      expect(await sequenceCount(t.shopId)).toBe(0);
     });
   });
 
