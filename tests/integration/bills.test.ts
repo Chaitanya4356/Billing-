@@ -72,8 +72,13 @@ describe("bills service", () => {
 
     it("owner can filter by date, range, status and method; no filter returns all", async () => {
       const old = await createBill(t.owner.ctx, cashBillInput([line(dosa)]), YESTERDAY);
+      // distinct, increasing created_at (same business day) so "newest first" is well defined
       const cashToday = await createBill(t.owner.ctx, cashBillInput([line(coffee)]), NOW);
-      const upiToday = await createBill(t.owner.ctx, upiBillInput([line(coffee, 2)]), NOW);
+      const upiToday = await createBill(
+        t.owner.ctx,
+        upiBillInput([line(coffee, 2)]),
+        new Date(NOW.getTime() + 60_000),
+      );
       await cancelBill(t.owner.ctx, upiToday.id, "wrong order", NOW);
 
       const all = await listBills(t.owner.ctx, {}, NOW);
