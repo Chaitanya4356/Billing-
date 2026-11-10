@@ -11,6 +11,7 @@ import {
   newIdempotencyKey,
   parseCashText,
   parseDiscountText,
+  replayWarning,
   type PaymentDraft,
 } from "@/modules/billing/screen";
 import type { BillDetail } from "@/modules/bills/types";
@@ -233,12 +234,17 @@ export function BillingClient({
       const result = await createBillAction(input);
       if (result.ok) {
         const bill = result.data;
-        // Only possible when an earlier attempt with the same key (e.g. one
-        // whose response was lost) was saved: the server returns that bill.
-        const warning =
-          bill.totalPaise !== input.expectedTotalPaise
-            ? `This bill was already saved by an earlier attempt, with a total of ${formatPaise(bill.totalPaise)} (the screen showed ${formatPaise(input.expectedTotalPaise)}). Collect ${formatPaise(bill.totalPaise)}.`
-            : null;
+        // A mismatch is only possible when an earlier attempt with the same key
+        // (e.g. one whose response was lost) was saved: the server returns that
+        // bill, which may differ in total, payment method or items.
+        const warning = replayWarning(
+          {
+            method: payment.method,
+            items: cart.lines.map((l) => ({ name: l.name, quantity: l.quantity, unitPricePaise: l.unitPricePaise })),
+            expectedTotalPaise: input.expectedTotalPaise,
+          },
+          bill,
+        );
         setSuccess({ bill, warning });
         return;
       }

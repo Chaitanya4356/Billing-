@@ -1,6 +1,6 @@
 // Pure helpers for the billing screen (client-safe: no server imports).
 
-import { percentToBp, rupeesToPaise } from "@/lib/money";
+import { formatPaise, percentToBp, rupeesToPaise } from "@/lib/money";
 import type { CartState } from "./cart";
 import type { CreateBillInput } from "./schema";
 
@@ -102,4 +102,69 @@ export function buildCreateBillInput(args: {
     customerName: name || null,
     customerPhone: phone || null,
   };
+}
+
+/** What the cashier submitted, for comparing with the bill the server returned. */
+export interface SubmittedBill {
+  method: "CASH" | "UPI";
+  items: { name: string; quantity: number; unitPricePaise: number }[];
+  expectedTotalPaise: number;
+}
+
+/** The parts of a returned BillDetail that the replay check compares. */
+export interface ReturnedBill {
+  payment: { method: "CASH" | "UPI" };
+  items: { productName: string; quantity: number; unitPricePaise: number }[];
+  totalPaise: number;
+}
+
+function itemKey(name: string, quantity: number, unitPricePaise: number): string {
+  return JSON.stringify([name, quantity, unitPricePaise]);
+}
+
+/**
+ * Differences (other than the total) between what was submitted and the bill
+ * the server returned. Non-empty only for an idempotent replay: an earlier
+ * attempt with the same key was saved (e.g. its response was lost) and the
+ * cashier changed the payment method or the items before charging again.
+ * Items are compared as a multiset of (name, quantity, unit price); order is irrelevant.
+ */
+export function describeReplayMismatch(submitted: SubmittedBill, bill: ReturnedBill): string[] {
+  const out: string[] = [];
+  if (bill.payment.method !== submitted.method) {
+    out.push(`Saved as ${bill.payment.method} but you chose ${submitted.method}.`);
+  }
+  const counts = new Map<string, number>();
+  for (const i of submitted.items) {
+    const k = itemKey(i.name, i.quantity, i.unitPricePaise);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  let itemsDiffer = bill.items.length !== submitted.items.length;
+  for (const i of bill.items) {
+    if (itemsDiffer) break;
+    const k = itemKey(i.productName, i.quantity, i.unitPricePaise);
+    const n = counts.get(k) ?? 0;
+    if (n === 0) itemsDiffer = true;
+    else counts.set(k, n - 1);
+  }
+  if (itemsDiffer) out.push("Saved items differ from the cart.");
+  return out;
+}
+
+/**
+ * The success-screen warning for a replayed bill, or null when the returned
+ * bill matches what was submitted. A total-only difference keeps its original
+ * wording; any other difference also says what differs and how to correct it.
+ */
+export function replayWarning(submitted: SubmittedBill, bill: ReturnedBill): string | null {
+  const diffs = describeReplayMismatch(submitted, bill);
+  const totalDiffers = bill.totalPaise !== submitted.expectedTotalPaise;
+  const totalText = `with a total of ${formatPaise(bill.totalPaise)} (the screen showed ${formatPaise(submitted.expectedTotalPaise)}). Collect ${formatPaise(bill.totalPaise)}.`;
+  if (diffs.length === 0) {
+    return totalDiffers ? `This bill was already saved by an earlier attempt, ${totalText}` : null;
+  }
+  const parts = ["This bill was already saved by an earlier attempt and differs from what you entered:", ...diffs];
+  if (totalDiffers) parts.push(`It was saved ${totalText}`);
+  parts.push("Review it, and if it is wrong, cancel it from Bills and charge again.");
+  return parts.join(" ");
 }

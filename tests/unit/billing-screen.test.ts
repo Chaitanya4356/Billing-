@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBillSchema } from "@/modules/billing/schema";
 import {
   buildCreateBillInput,
+  describeReplayMismatch,
   newIdempotencyKey,
   parseCashText,
   parseDiscountText,
+  replayWarning,
   searchProducts,
 } from "@/modules/billing/screen";
 
@@ -141,5 +143,84 @@ describe("buildCreateBillInput", () => {
     expect(upi.discount).toBeNull();
     expect(upi.customerName).toBe("Ravi");
     expect(createBillSchema.safeParse(upi).success).toBe(true);
+  });
+});
+
+describe("describeReplayMismatch / replayWarning", () => {
+  const items = [
+    { name: "Tea", quantity: 2, unitPricePaise: 1500 },
+    { name: "Samosa", quantity: 1, unitPricePaise: 2000 },
+  ];
+  const submitted = { method: "CASH" as const, items, expectedTotalPaise: 5000 };
+  const bill = (over: Partial<{ method: "CASH" | "UPI"; items: typeof items; totalPaise: number }> = {}) => ({
+    payment: { method: over.method ?? ("CASH" as const) },
+    items: (over.items ?? items).map((i) => ({
+      productName: i.name,
+      quantity: i.quantity,
+      unitPricePaise: i.unitPricePaise,
+    })),
+    totalPaise: over.totalPaise ?? 5000,
+  });
+
+  it("returns no differences for the same method and items", () => {
+    expect(describeReplayMismatch(submitted, bill())).toEqual([]);
+    expect(replayWarning(submitted, bill())).toBeNull();
+  });
+
+  it("ignores item order", () => {
+    expect(describeReplayMismatch(submitted, bill({ items: [items[1], items[0]] }))).toEqual([]);
+  });
+
+  it("reports a different payment method", () => {
+    expect(describeReplayMismatch({ ...submitted, method: "UPI" }, bill())).toEqual([
+      "Saved as CASH but you chose UPI.",
+    ]);
+    expect(describeReplayMismatch(submitted, bill({ method: "UPI" }))).toEqual(["Saved as UPI but you chose CASH."]);
+  });
+
+  it("reports a different quantity", () => {
+    const changed = [{ ...items[0], quantity: 3 }, items[1]];
+    expect(describeReplayMismatch(submitted, bill({ items: changed }))).toEqual(["Saved items differ from the cart."]);
+  });
+
+  it("reports a different unit price", () => {
+    const changed = [{ ...items[0], unitPricePaise: 1600 }, items[1]];
+    expect(describeReplayMismatch(submitted, bill({ items: changed }))).toEqual(["Saved items differ from the cart."]);
+  });
+
+  it("reports an extra or a missing item", () => {
+    const extra = [...items, { name: "Coffee", quantity: 1, unitPricePaise: 2500 }];
+    expect(describeReplayMismatch(submitted, bill({ items: extra }))).toEqual(["Saved items differ from the cart."]);
+    expect(describeReplayMismatch(submitted, bill({ items: [items[0]] }))).toEqual([
+      "Saved items differ from the cart.",
+    ]);
+  });
+
+  it("treats a repeated line as different from a single line (multiset)", () => {
+    const dup = [items[0], items[0]];
+    const sub = { ...submitted, items: [items[0], items[1]] };
+    expect(describeReplayMismatch(sub, bill({ items: dup }))).toEqual(["Saved items differ from the cart."]);
+  });
+
+  it("keeps the current total-only message", () => {
+    expect(describeReplayMismatch(submitted, bill({ totalPaise: 5200 }))).toEqual([]);
+    expect(replayWarning(submitted, bill({ totalPaise: 5200 }))).toBe(
+      "This bill was already saved by an earlier attempt, with a total of ₹52.00 (the screen showed ₹50.00). Collect ₹52.00.",
+    );
+  });
+
+  it("says what differs and how to fix it", () => {
+    const w = replayWarning({ ...submitted, method: "UPI" }, bill());
+    expect(w).toContain("This bill was already saved by an earlier attempt");
+    expect(w).toContain("Saved as CASH but you chose UPI.");
+    expect(w).toContain("Review it, and if it is wrong, cancel it from Bills and charge again.");
+    expect(w).not.toContain("Collect");
+  });
+
+  it("combines a total difference with other differences", () => {
+    const w = replayWarning({ ...submitted, method: "UPI" }, bill({ totalPaise: 5200 }));
+    expect(w).toContain("Saved as CASH but you chose UPI.");
+    expect(w).toContain("Collect ₹52.00");
+    expect(w).toContain("cancel it from Bills and charge again.");
   });
 });
