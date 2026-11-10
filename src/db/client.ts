@@ -1,16 +1,16 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import { getEnv } from "../lib/env";
 import * as schema from "./schema";
 
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error("DATABASE_URL is not set (copy .env.example to .env)");
-}
+// Relative import: this module is also loaded by the Playwright Node runner, which does not resolve the "@/" alias.
+// Throws one error naming every missing/invalid variable (copy .env.example to .env).
+const env = getEnv();
 
 // Reuse one pool across Next.js dev hot reloads.
 const globalForPool = globalThis as unknown as { __billingPool?: Pool };
-const pool = globalForPool.__billingPool ?? new Pool({ connectionString });
-if (process.env.NODE_ENV !== "production") globalForPool.__billingPool = pool;
+const pool = globalForPool.__billingPool ?? new Pool({ connectionString: env.DATABASE_URL });
+if (env.NODE_ENV !== "production") globalForPool.__billingPool = pool;
 
 export const db = drizzle(pool, { schema });
 
