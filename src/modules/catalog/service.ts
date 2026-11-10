@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import type { DbOrTx } from "@/db/client";
 import { categories, products } from "@/db/schema";
 import { AppError } from "@/lib/errors";
+import { escapeLike } from "@/lib/like";
 import type { AuthContext } from "@/lib/types";
 import { recordAudit } from "@/modules/audit/service";
 import { assertRole } from "@/modules/auth/guards";
@@ -81,11 +82,6 @@ function isUniqueViolation(e: unknown): boolean {
 }
 
 const DUPLICATE_CATEGORY = "A category with that name already exists";
-
-/** Escapes LIKE wildcards so the user's term is matched literally. */
-function escapeLike(term: string): string {
-  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
-}
 
 // ---------------------------------------------------------------- categories
 
