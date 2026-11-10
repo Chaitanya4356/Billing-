@@ -1,4 +1,4 @@
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../../src/db/client";
 import { bills, categories, products, shopSettings, shops, users } from "../../src/db/schema";
 import type { AuthContext } from "../../src/lib/types";
@@ -144,4 +144,23 @@ export async function setShopGst(
 export async function countBills(shopId: string): Promise<number> {
   const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(bills).where(eq(bills.shopId, shopId));
   return row?.n ?? 0;
+}
+
+/** Turns "cashiers can cancel bills" on or off for a shop. */
+export async function setCashierCanCancel(shopId: string, allowed: boolean): Promise<void> {
+  await db.update(shopSettings).set({ cashierCanCancel: allowed }).where(eq(shopSettings.shopId, shopId));
+}
+
+/**
+ * Moves a bill's business_date back by `days` (default 1) and returns the new
+ * date (YYYY-MM-DD). The bill is found by its displayed number, e.g. B-2627-000001.
+ */
+export async function moveBillBusinessDateBack(shopId: string, billNumberDisplay: string, days = 1): Promise<string> {
+  const [row] = await db
+    .update(bills)
+    .set({ businessDate: sql`${bills.businessDate} - ${days}::int` })
+    .where(and(eq(bills.shopId, shopId), eq(bills.billNumberDisplay, billNumberDisplay)))
+    .returning({ businessDate: bills.businessDate });
+  if (!row) throw new Error(`No bill ${billNumberDisplay} in shop ${shopId}`);
+  return row.businessDate;
 }

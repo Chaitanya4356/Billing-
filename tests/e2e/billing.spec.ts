@@ -1,57 +1,27 @@
-import { expect, test, type Page } from "@playwright/test";
-import { countBills, login, resetAndSeed, setProductPrice, setShopGst, type SeededShop } from "./helpers";
+import { expect, test } from "@playwright/test";
+import {
+  cart,
+  cashInput,
+  chargeButton,
+  chargeExact,
+  countBills,
+  newBill,
+  openBillingAs,
+  payable,
+  printed,
+  resetAndSeed,
+  setProductPrice,
+  setShopGst,
+  successDialog,
+  tile,
+  type SeededShop,
+} from "./helpers";
 
 // Every group starts from a fresh database (tokens and bill numbers restart at
 // 1), and the tests inside a group build on each other.
 test.describe.configure({ mode: "serial" });
 
 const PRICE_CHANGED_MESSAGE = "Prices or tax settings changed. Please review the new total and charge again.";
-
-/** Installs the print test seam: every receipt HTML is collected in window.__printed. */
-async function installPrintHook(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const w = window as unknown as { __printed: string[]; __PRINT_HOOK__: (html: string) => void };
-    w.__printed = [];
-    w.__PRINT_HOOK__ = (html: string) => {
-      w.__printed.push(html);
-    };
-  });
-}
-
-function printed(page: Page): Promise<string[]> {
-  return page.evaluate(() => (window as unknown as { __printed: string[] }).__printed);
-}
-
-async function openBillingAs(page: Page, user: { username: string; password: string }, role: "OWNER" | "CASHIER") {
-  await installPrintHook(page);
-  await login(page, user.username, user.password);
-  if (role === "CASHIER") {
-    await expect(page).toHaveURL(/\/billing$/);
-  } else {
-    await expect(page).toHaveURL(/\/dashboard$/);
-    await page.goto("/billing");
-  }
-  await expect(page.getByRole("searchbox", { name: "Search products" })).toBeVisible();
-}
-
-const tile = (page: Page, name: string) => page.getByRole("button", { name: new RegExp(`^Add ${name}`) });
-const cart = (page: Page) => page.getByRole("region", { name: "Cart" });
-const payable = (page: Page) => page.getByTestId("payable-amount");
-const chargeButton = (page: Page) => page.getByRole("button", { name: /^Charge/ });
-const cashInput = (page: Page) => page.getByLabel("Cash received (₹)");
-const successDialog = (page: Page) => page.getByRole("dialog", { name: "Bill saved" });
-
-async function chargeExact(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Exact", exact: true }).click();
-  await expect(chargeButton(page)).toBeEnabled();
-  await chargeButton(page).click();
-  await expect(successDialog(page)).toBeVisible();
-}
-
-async function newBill(page: Page): Promise<void> {
-  await successDialog(page).getByRole("button", { name: "New Bill" }).click();
-  await expect(successDialog(page)).toBeHidden();
-}
 
 test.describe("cash charge, success screen and print", () => {
   let shop: SeededShop;
