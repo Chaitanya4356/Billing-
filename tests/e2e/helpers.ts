@@ -16,12 +16,47 @@ function pointAtTestDatabase(): void {
   process.env.DATABASE_URL = url;
 }
 
-/** Truncates the test database and seeds one shop with an owner and a cashier. */
-export async function resetAndSeed(): Promise<TestShop> {
+export interface SeededShop extends TestShop {
+  /** Product ids seeded in the shop's category (both ₹15, active). */
+  products: { masalaTea: string; samosa: string };
+}
+
+/**
+ * Truncates the test database and seeds one shop with an owner, a cashier and
+ * the products "Masala Tea" (₹15) and "Samosa" (₹15) in the seeded category.
+ */
+export async function resetAndSeed(): Promise<SeededShop> {
   pointAtTestDatabase();
-  const { resetDb, makeShop } = await import("../helpers/db");
+  const { resetDb, makeShop, makeProduct } = await import("../helpers/db");
   await resetDb();
-  return makeShop();
+  const shop = await makeShop();
+  const masalaTea = await makeProduct(shop.shopId, { name: "Masala Tea", pricePaise: 1500, categoryId: shop.categoryId });
+  const samosa = await makeProduct(shop.shopId, { name: "Samosa", pricePaise: 1500, categoryId: shop.categoryId });
+  return { ...shop, products: { masalaTea, samosa } };
+}
+
+/** Direct DB update of a product's price (test database only). */
+export async function setProductPrice(productId: string, pricePaise: number): Promise<void> {
+  pointAtTestDatabase();
+  const db = await import("../helpers/db");
+  await db.setProductPrice(productId, pricePaise);
+}
+
+/** Direct DB update of a shop's GST settings (test database only). */
+export async function setShopGst(
+  shopId: string,
+  gst: { enabled: boolean; rateBp: number; inclusive: boolean },
+): Promise<void> {
+  pointAtTestDatabase();
+  const db = await import("../helpers/db");
+  await db.setShopGst(shopId, gst);
+}
+
+/** Number of bills stored for the shop (test database only). */
+export async function countBills(shopId: string): Promise<number> {
+  pointAtTestDatabase();
+  const db = await import("../helpers/db");
+  return db.countBills(shopId);
 }
 
 /** Signs in through the login form. Does not assert where it lands. */

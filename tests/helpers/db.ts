@@ -1,6 +1,6 @@
 import { asc, eq, sql } from "drizzle-orm";
 import { db } from "../../src/db/client";
-import { categories, products, shopSettings, shops, users } from "../../src/db/schema";
+import { bills, categories, products, shopSettings, shops, users } from "../../src/db/schema";
 import type { AuthContext } from "../../src/lib/types";
 import { hashPassword } from "../../src/modules/auth/password";
 import { assertTestDatabaseUrl } from "./assert-test-db";
@@ -122,4 +122,26 @@ export async function makeProduct(
     })
     .returning({ id: products.id });
   return row.id;
+}
+
+/** Sets a product's catalog price directly (e2e: simulate a price change behind the cashier's back). */
+export async function setProductPrice(productId: string, pricePaise: number): Promise<void> {
+  await db.update(products).set({ pricePaise }).where(eq(products.id, productId));
+}
+
+/** Sets a shop's GST settings directly (e2e: simulate a settings change behind the cashier's back). */
+export async function setShopGst(
+  shopId: string,
+  gst: { enabled: boolean; rateBp: number; inclusive: boolean },
+): Promise<void> {
+  await db
+    .update(shopSettings)
+    .set({ gstEnabled: gst.enabled, gstRateBp: gst.rateBp, gstInclusive: gst.inclusive })
+    .where(eq(shopSettings.shopId, shopId));
+}
+
+/** Number of bills stored for a shop. */
+export async function countBills(shopId: string): Promise<number> {
+  const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(bills).where(eq(bills.shopId, shopId));
+  return row?.n ?? 0;
 }
