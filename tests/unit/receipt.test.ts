@@ -186,10 +186,20 @@ describe("renderReceiptHtml", () => {
     expect(html.match(/&lt;script&gt;/g)?.length).toBe(7);
   });
 
-  it("shows the title only on GST receipts", () => {
-    expect(renderReceiptHtml(receipt(), 58)).not.toContain("Tax Invoice");
+  it("prints a non-empty title regardless of GST", () => {
     const gst = { inclusive: true, rateBp: 500, taxablePaise: 100, cgstPaise: 1, sgstPaise: 1 };
-    expect(renderReceiptHtml(receipt({ gst }), 58)).toContain("Tax Invoice");
+    const supply = renderReceiptHtml(receipt({ title: "Bill of Supply", gst: null }), 58);
+    expect(supply).toContain('<div class="line center title">Bill of Supply</div>');
+    expect(supply).not.toMatch(/CGST|SGST/);
+    const invoice = renderReceiptHtml(receipt({ title: "Tax Invoice", gst }), 58);
+    expect(invoice).toContain('<div class="line center title">Tax Invoice</div>');
+    expect(invoice).toContain("CGST");
+  });
+
+  it("prints no title element for an empty or whitespace title", () => {
+    for (const title of ["", "   "]) {
+      expect(renderReceiptHtml(receipt({ title }), 58)).not.toContain('class="line center title"');
+    }
   });
 
   it("renders header and footer newlines as separate escaped lines", () => {

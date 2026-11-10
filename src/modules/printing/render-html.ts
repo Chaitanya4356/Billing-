@@ -45,6 +45,7 @@ html { margin: 0; padding: 0; }
 body { width: ${bodyWidth}; margin: 0; padding: 2mm 1mm; color: #000; font-family: "Courier New", Courier, monospace; font-size: 12px; line-height: 1.3; }
 .center { text-align: center; }
 .line { overflow-wrap: anywhere; }
+.title { font-weight: bold; }
 .shop { font-size: 15px; font-weight: bold; text-align: center; overflow-wrap: anywhere; }
 .marker { border: 2px solid #000; text-align: center; font-weight: bold; font-size: 15px; padding: 1mm 0; margin: 1mm 0; }
 .token-label { text-align: center; font-weight: bold; font-size: 12px; margin-top: 2mm; }
@@ -73,8 +74,8 @@ export function renderReceiptHtml(data: ReceiptData, paperWidth: 58 | 80): strin
   if (data.shop.phone.trim()) out.push(`<div class="line center">${e(data.shop.phone)}</div>`);
   if (data.shop.gstin) out.push(`<div class="line center">GSTIN: ${e(data.shop.gstin)}</div>`);
   if (data.header.trim()) out.push(`<div class="center">${lines(data.header)}</div>`);
-  // The title ("Tax Invoice") is only meaningful when GST applies to the bill.
-  if (data.gst && data.title.trim()) out.push(`<div class="line center"><b>${e(data.title)}</b></div>`);
+  // Owner-configured heading ("Tax Invoice", "Bill of Supply", ...), printed whenever non-empty.
+  if (data.title.trim()) out.push(`<div class="line center title">${e(data.title.trim())}</div>`);
 
   out.push(`<div class="rule"></div>`);
   out.push(`<div class="line">Bill: ${e(data.billNumberDisplay)}</div>`);
