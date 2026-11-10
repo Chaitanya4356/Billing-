@@ -1,12 +1,12 @@
 import { and, asc, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { billItems, bills, payments, shopSettings, shops } from "@/db/schema";
+import { billItems, bills, payments } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { roundDiv } from "@/lib/money";
-import { addDays, businessDateFor, monthRange, weekStartOf } from "@/lib/time";
+import { addDays, monthRange, weekStartOf } from "@/lib/time";
 import type { AuthContext } from "@/lib/types";
 import { assertRole } from "@/modules/auth/guards";
-import { listBills } from "@/modules/bills/service";
+import { currentBusinessDate, listBills } from "@/modules/bills/service";
 import type { BillListRow } from "@/modules/bills/service";
 import type { CsvBillRow } from "./csv";
 
@@ -267,14 +267,7 @@ export async function getDashboard(
   now: Date = new Date(),
 ): Promise<{ today: SalesSummary; recent: BillListRow[] }> {
   assertRole(ctx, ["OWNER"]);
-  const [clock] = await db
-    .select({ timezone: shops.timezone, dayStartHour: shopSettings.dayStartHour })
-    .from(shops)
-    .innerJoin(shopSettings, eq(shopSettings.shopId, shops.id))
-    .where(eq(shops.id, ctx.shopId));
-  if (!clock) throw new AppError("NOT_FOUND", "Shop settings not found");
-
-  const today = businessDateFor(now, clock.timezone, clock.dayStartHour);
+  const today = await currentBusinessDate(ctx, now);
   const [summary, recent] = await Promise.all([
     summarize(ctx.shopId, { from: today, to: today }),
     listBills(ctx, { pageSize: 10, page: 1 }, now),

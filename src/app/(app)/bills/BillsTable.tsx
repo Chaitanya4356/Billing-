@@ -6,7 +6,8 @@ import { formatPaise } from "@/lib/money";
 import { formatDateTimeIST } from "@/lib/time";
 import type { Role } from "@/lib/types";
 import type { BillListRow } from "@/modules/bills/service";
-import { BillDrawer, StatusBadge } from "./BillDrawer";
+import { BillDrawer } from "./BillDrawer";
+import { StatusBadge } from "./StatusBadge";
 
 export interface BillsFilters {
   /** Token or bill number text. */

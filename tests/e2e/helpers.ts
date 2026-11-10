@@ -165,3 +165,49 @@ export async function chargeCashBill(
   await newBill(page);
   return { token, billNumber };
 }
+
+/**
+ * Like chargeCashBill, but pays the cart by UPI: chooses UPI, ticks "Payment
+ * received" and charges. Returns the token and bill number from the success
+ * screen and ends on a fresh, empty billing screen.
+ */
+export async function chargeUpiBill(
+  page: Page,
+  lines: Array<{ name: string; qty: number }>,
+): Promise<{ token: string; billNumber: string }> {
+  for (const line of lines) {
+    for (let i = 0; i < line.qty; i++) await tile(page, line.name).click();
+  }
+  await page.getByRole("button", { name: "UPI", exact: true }).click();
+  await page.getByLabel(/Payment received/).check();
+  await expect(chargeButton(page)).toBeEnabled();
+  await chargeButton(page).click();
+  await expect(successDialog(page)).toBeVisible();
+  const success = successDialog(page);
+  const token = (await success.getByTestId("success-token").innerText()).trim();
+  const billNumber = (await success.getByTestId("success-bill-number").innerText()).trim();
+  await newBill(page);
+  return { token, billNumber };
+}
+
+/**
+ * Cancels a bill through the Bills page: opens /bills, opens the bill's detail
+ * drawer, confirms the cancel dialog with `reason`, waits for the CANCELLED
+ * status and closes the drawer. The signed-in user must be allowed to cancel.
+ */
+export async function cancelBillViaUi(page: Page, billNumber: string, reason: string): Promise<void> {
+  await page.goto("/bills");
+  const table = page.getByRole("table", { name: "Bills" });
+  await expect(table).toBeVisible();
+  await table.locator("tbody tr").filter({ hasText: billNumber }).click();
+  const drawer = page.getByRole("dialog", { name: `Bill ${billNumber}` });
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole("button", { name: "Cancel bill" }).click();
+  const dialog = page.getByRole("dialog", { name: "Cancel this bill?" });
+  await dialog.getByLabel("Reason for cancelling").fill(reason);
+  await dialog.getByRole("button", { name: "Confirm cancel" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(drawer.getByTestId("bill-status")).toHaveText("CANCELLED");
+  await drawer.getByRole("button", { name: "Close" }).click();
+  await expect(drawer).toBeHidden();
+}

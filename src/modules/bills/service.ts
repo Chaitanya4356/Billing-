@@ -61,6 +61,11 @@ async function loadClock(executor: DbOrTx, shopId: string): Promise<ShopClock> {
 const todayOf = (clock: ShopClock, now: Date): string =>
   businessDateFor(now, clock.timezone, clock.dayStartHour);
 
+/** The shop's current business date (YYYY-MM-DD), honouring its timezone and day-start hour. */
+export async function currentBusinessDate(ctx: AuthContext, now: Date = new Date()): Promise<string> {
+  return todayOf(await loadClock(db, ctx.shopId), now);
+}
+
 /**
  * Bill history, newest first. A cashier only ever sees today's business date
  * (any date filter they pass is ignored); an owner can filter by date or range.
