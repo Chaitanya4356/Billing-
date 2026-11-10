@@ -56,7 +56,10 @@ interface PricedLine {
   quantity: number;
 }
 
-/** Current catalog rows for the cart, in cart order. Inactive, deleted or foreign products are rejected. */
+/**
+ * Current catalog rows for the cart, in cart order. Inactive, deleted or foreign products, and products of disabled
+ * categories, are rejected.
+ */
 async function loadLines(shopId: string, input: ParsedCreateBillInput): Promise<PricedLine[]> {
   const ids = input.items.map((i) => i.productId);
   const rows = await db
@@ -67,7 +70,15 @@ async function loadLines(shopId: string, input: ParsedCreateBillInput): Promise<
       categoryName: categories.name,
     })
     .from(products)
-    .innerJoin(categories, and(eq(categories.id, products.categoryId), eq(categories.shopId, products.shopId)))
+    // A disabled category hides its products on the billing screen; enforce it here too.
+    .innerJoin(
+      categories,
+      and(
+        eq(categories.id, products.categoryId),
+        eq(categories.shopId, products.shopId),
+        eq(categories.isActive, true),
+      ),
+    )
     .where(
       and(
         eq(products.shopId, shopId),

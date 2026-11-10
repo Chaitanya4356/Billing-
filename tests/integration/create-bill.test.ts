@@ -9,7 +9,7 @@ import { calculateTotals } from "@/modules/billing/calc";
 import { createBill } from "@/modules/billing/service";
 import type { CreateBillInput } from "@/modules/billing/schema";
 import { getBillDetail } from "@/modules/bills/repo";
-import { deleteProduct, updateProduct } from "@/modules/catalog/service";
+import { createCategory, deleteProduct, setCategoryActive, updateProduct } from "@/modules/catalog/service";
 import { updateSettings } from "@/modules/shop/service";
 import { makeProduct, makeShop, resetDb, type TestShop } from "../helpers/db";
 
@@ -442,6 +442,39 @@ describe("createBill", () => {
       }
       expect(await billCount(t.shopId)).toBe(0);
       expect(await sequenceCount(t.shopId)).toBe(0);
+    });
+
+    it("INVALID_PRODUCT for a product whose category is disabled, without consuming numbers; re-enabling restores it", async () => {
+      const snacks = await createCategory(t.owner.ctx, { name: "Snacks" });
+      const vada = await makeProduct(t.shopId, { name: "Vada", pricePaise: 3000, categoryId: snacks.id });
+      const vadaCart = () =>
+        cash({
+          items: [
+            { productId: dosa, quantity: 1, expectedUnitPricePaise: 6000 },
+            { productId: vada, quantity: 1, expectedUnitPricePaise: 3000 },
+          ],
+        });
+
+      await setCategoryActive(t.owner.ctx, snacks.id, false);
+      const err = await createBill(t.cashier.ctx, vadaCart(), NOW).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AppError);
+      expect((err as AppError).code).toBe("INVALID_PRODUCT");
+      expect((err as AppError).message).toBe("Some items are no longer available. Please review the cart.");
+      expect(await billCount(t.shopId)).toBe(0);
+      expect(await sequenceCount(t.shopId)).toBe(0);
+
+      // A product in an active category still bills, and gets the first numbers.
+      const first = await createBill(t.cashier.ctx, cash(), NOW);
+      expect(first.billNumber).toBe(1);
+      expect(first.tokenNumber).toBe(1);
+
+      await setCategoryActive(t.owner.ctx, snacks.id, true);
+      const restored = await createBill(t.cashier.ctx, vadaCart(), NOW);
+      expect(restored.billNumber).toBe(2);
+      expect(restored.items.map((i) => [i.productName, i.categoryName])).toEqual([
+        ["Masala Dosa", "General"],
+        ["Vada", "Snacks"],
+      ]);
     });
 
     it("TOTAL_NOT_POSITIVE for a free-only cart", async () => {
